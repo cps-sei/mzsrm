@@ -46,7 +46,7 @@ ifeq ($(UNAME_P),x86_64)
 INCDIR = /lib/modules/$(shell uname -r)/build/include
 else
 ifeq ($(UNAME_P),armv7l)
-INCDIR = ../../odroid-linux/include
+INCDIR = $(HOME)/odroid-linux/include
 EXTRA_CFLAGS += -D__ARMCORE__
 else
 $(error platform (uname -p) must be x86_64 or armv7l)
@@ -66,7 +66,7 @@ else
 	ifeq ($(UNAME_P),x86_64)
 		KERNELDIR ?= /lib/modules/$(shell uname -r)/build
 	else
-		KERNELDIR ?= ../../odroid-linux
+		KERNELDIR ?= $(HOME)/odroid-linux
 	endif
 	PWD := $(shell pwd)
 	EXTRA_CFLAGS += -I$(PWD)/$(INCDIR) -O1

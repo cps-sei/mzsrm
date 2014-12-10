@@ -1,0 +1,1466 @@
+/*
+Copyright (c) 2014 Carnegie Mellon University.
+
+All Rights Reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the 
+following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following 
+acknowledgments and disclaimers.
+2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following 
+acknowledgments and disclaimers in the documentation and/or other materials provided with the distribution.
+3. Products derived from this software may not include “Carnegie Mellon University,” "SEI” and/or “Software 
+Engineering Institute" in the name of such derived product, nor shall “Carnegie Mellon University,” "SEI” and/or 
+“Software Engineering Institute" be used to endorse or promote products derived from this software without prior 
+written permission. For written permission, please contact permission@sei.cmu.edu.
+
+ACKNOWLEDMENTS AND DISCLAIMERS:
+Copyright 2014 Carnegie Mellon University
+This material is based upon work funded and supported by the Department of Defense under Contract No. FA8721-
+05-C-0003 with Carnegie Mellon University for the operation of the Software Engineering Institute, a federally 
+funded research and development center.
+
+Any opinions, findings and conclusions or recommendations expressed in this material are those of the author(s) and 
+do not necessarily reflect the views of the United States Department of Defense.
+
+NO WARRANTY. 
+THIS CARNEGIE MELLON UNIVERSITY AND SOFTWARE ENGINEERING INSTITUTE 
+MATERIAL IS FURNISHED ON AN “AS-IS” BASIS. CARNEGIE MELLON UNIVERSITY MAKES NO 
+WARRANTIES OF ANY KIND, EITHER EXPRESSED OR IMPLIED, AS TO ANY MATTER INCLUDING, 
+BUT NOT LIMITED TO, WARRANTY OF FITNESS FOR PURPOSE OR MERCHANTABILITY, 
+EXCLUSIVITY, OR RESULTS OBTAINED FROM USE OF THE MATERIAL. CARNEGIE MELLON 
+UNIVERSITY DOES NOT MAKE ANY WARRANTY OF ANY KIND WITH RESPECT TO FREEDOM FROM 
+PATENT, TRADEMARK, OR COPYRIGHT INFRINGEMENT.
+
+This material has been approved for public release and unlimited distribution.
+Carnegie Mellon® is registered in the U.S. Patent and Trademark Office by Carnegie Mellon University.
+
+DM-0000891
+*/
+
+#include <linux/math64.h>
+#include <asm/current.h>
+#include <asm/uaccess.h>
+#include <linux/jiffies.h>
+#include <linux/kernel.h>
+#include <linux/list.h>
+#include <linux/cdev.h>
+#include <linux/fs.h>
+#include <linux/module.h>
+#include <linux/nsproxy.h>
+#include <linux/sched.h>
+#include <linux/hrtimer.h>
+#include <linux/ktime.h>
+#include <linux/kthread.h>
+#include <linux/spinlock.h>
+#include <asm/siginfo.h>
+#include <linux/signal.h>
+#include "zsrm.h"
+
+MODULE_LICENSE("GPL");
+
+// fixed for now -- This is for version 3.8
+#define LINUX_KERNEL_MINOR_VERSION 40
+
+/* device number. */
+static dev_t dev_id;
+/* char device structure. */
+static struct cdev c_dev;
+
+static struct hrtimer ht;
+int timer_started = 0;
+/* Deprecated
+spinlock_t zsrmlock = SPIN_LOCK_UNLOCKED;;
+spinlock_t reschedule_lock = SPIN_LOCK_UNLOCKED;
+*/
+
+static DEFINE_SPINLOCK(zsrmlock);
+static DEFINE_SPINLOCK(reschedule_lock);
+
+enum hrtimer_restart zs_instant_handler(struct hrtimer *timer);
+enum hrtimer_restart period_handler(struct hrtimer *timer);
+int attach_reserve(int rid, int pid);
+int find_empty_entry(void);
+int wait_for_next_period(int rid);
+int modal_wait_for_next_period(int mrid);
+int delete_reserve(int rid);
+int detach_reserve(int rid);
+void init(void);
+int create_reserve(int rid);
+void period_degradation(int rid);
+void try_resume_normal_period(int rid);
+int init_sys_mode_transitions(void);
+int create_sys_mode_transition(void);
+int delete_sys_mode_transition(int stid);
+int add_transition_to_sys_transition(int stid, int mrid, int mtid);
+int sys_mode_transition(int stid);
+int mode_transition(int mrid, int tid);
+int create_modal_reserve(int);
+int delete_modal_reserve(int mrid);
+int detach_modal_reserve(int mrid);
+int attach_reserve_transitional(int rid, int pid, struct timespec *trans_zs_instant);
+int print_stats(void);
+void test_ticks(void);
+unsigned long long timestamp_ns(void);
+void calibrate_ticks(void);
+static inline unsigned long long rdtsc(void);
+
+//timestamps
+unsigned long long arrival_ts_ns=0LL;
+unsigned long long mode_change_ts_ns=0LL;
+unsigned long long no_mode_change_ts_ns=0LL;
+unsigned long long request_mode_change_ts_ns=0LL;
+unsigned long long mode_change_signals_sent_ts_ns=0LL;
+unsigned long long trans_into_susp_ts_ns = 0LL;
+unsigned long long trans_from_susp_ts_ns = 0LL;
+unsigned long long start_of_enforcement_ts_ns =0LL;
+unsigned long long end_of_enforcement_ts_ns = 0LL;
+
+// measurements
+unsigned long long mode_change_latency_ns_avg=0LL;
+unsigned long long mode_change_latency_ns_worst=0LL;
+unsigned long long arrival_no_mode_ns_avg=0LL;
+unsigned long long arrival_no_mode_ns_worst=0LL;
+unsigned long long arrival_mode_ns_avg=0LL;
+unsigned long long arrival_mode_ns_worst=0LL;
+unsigned long long transition_into_susp_ns_avg=0LL;
+unsigned long long transition_into_susp_ns_worst=0LL;
+unsigned long long transition_from_susp_ns_avg=0LL;
+unsigned long long transition_from_susp_ns_worst=0LL;
+unsigned long long enforcement_latency_ns_avg=0LL;
+unsigned long long enforcement_latency_ns_worst=0LL;
+
+struct zs_reserve reserve_table[MAX_RESERVES];
+struct zs_modal_reserve modal_reserve_table[MAX_MODAL_RESERVES];
+
+struct zs_modal_transition_entry sys_mode_transition_table[MAX_SYS_MODE_TRANSITIONS][MAX_TRANSITIONS_IN_SYS_TRANSITIONS];
+
+static inline unsigned long long rdtsc(){
+  unsigned int hi, lo;
+  __asm__ volatile ("rdtsc" : "=a" (lo), "=d" (hi));
+  return ((unsigned long long) hi << 32) | lo;
+}
+
+unsigned long nanosPerTenTicks;
+
+unsigned long long timestamp_ns(){
+  struct timespec ts;
+
+  getnstimeofday(&ts);
+
+  return (((unsigned long long)ts.tv_sec) * 1000000000L) + (unsigned long long) ts.tv_nsec;
+}
+
+void calibrate_ticks(){
+  unsigned long long begin=0,end=0;
+  unsigned long waituntil;
+  struct timespec begints, endts;
+  unsigned long long diffts;
+
+  getnstimeofday(&begints);
+  begin = rdtsc();
+  waituntil = jiffies + (HZ/4);
+  while (time_before(jiffies, waituntil))
+    ;
+  end = rdtsc();
+  getnstimeofday(&endts);
+  diffts = ((endts.tv_sec * 1000000000)+ endts.tv_nsec) -
+    ((begints.tv_sec * 1000000000) + begints.tv_nsec);
+  end = end-begin;
+  end /=10;
+
+  nanosPerTenTicks = diffts / end;
+}
+
+
+// this will automatically truncate the result
+unsigned long long ticks2nanos(unsigned long long ticks){
+  unsigned long long tmp =(unsigned long long) (ticks * nanosPerTenTicks);
+  return (tmp / 10);
+}
+
+void test_ticks(){
+  unsigned long long begin=0,end=0;
+  unsigned long waituntil;
+  struct timespec begints, endts;
+  unsigned long long diffts;
+
+  getnstimeofday(&begints);
+  begin = rdtsc();
+  waituntil = jiffies + (HZ/4);
+  while (time_before(jiffies, waituntil))
+    ;
+  end = rdtsc();
+  getnstimeofday(&endts);
+  diffts = ((endts.tv_sec * 1000000000)+ endts.tv_nsec) -
+    ((begints.tv_sec * 1000000000) + begints.tv_nsec);
+  end = end-begin;
+
+  end = ticks2nanos(end);
+
+  printk("ZSRMM: timeofday nanos : %llu\n",diffts);
+  printk("ZSRMM: ticks nanos: %llu\n",end);
+}
+
+int print_stats(){
+  printk("Nanos per Ten ticks: %lu\n", nanosPerTenTicks);
+  printk("avg mode change latency: %llu (ns) \n",mode_change_latency_ns_avg );
+  printk("worst mode change latency: %llu (ns) \n",mode_change_latency_ns_worst);
+  printk("avg arrival no mode change %llu (ns) \n",arrival_no_mode_ns_avg);
+  printk("worst arrival no mode change %llu (ns) \n", arrival_no_mode_ns_worst);
+  printk("avg arrival mode change %llu (ns) \n",arrival_mode_ns_avg);
+  printk("worst arrival mode change %llu (ns) \n",arrival_mode_ns_worst);
+  printk("avg transition into suspension %llu (ns) \n",transition_into_susp_ns_avg);
+  printk("worst transition into suspension %llu (ns) \n",transition_into_susp_ns_worst);
+  printk("avg transition from suspension %llu (ns)\n",transition_from_susp_ns_avg);
+  printk("worst transition_from_susp_ns_worst %llu (ns) \n",transition_from_susp_ns_worst);
+  printk("avg enforcement latency: %llu (ns) \n",enforcement_latency_ns_avg);
+  printk("worst enforcement latency: %llu (ns) \n",enforcement_latency_ns_worst);
+  return 0;
+}
+
+int init_sys_mode_transitions(){
+  int i,j;
+  for (i=0;i<MAX_SYS_MODE_TRANSITIONS;i++){
+    for (j=0;j<MAX_TRANSITIONS_IN_SYS_TRANSITIONS;j++){
+      sys_mode_transition_table[i][j].mrid=-1;
+      sys_mode_transition_table[i][j].modal_transition_id=-1;
+      sys_mode_transition_table[i][j].in_use=0;
+    }
+  }
+  return 0;
+}
+
+int create_sys_mode_transition(){
+  int i,j;
+  for (i=0;i<MAX_SYS_MODE_TRANSITIONS;i++){
+    if (sys_mode_transition_table[i][0].in_use==0){
+      for (j=0;j<MAX_TRANSITIONS_IN_SYS_TRANSITIONS;j++){
+	sys_mode_transition_table[i][j].mrid=-1;
+	sys_mode_transition_table[i][j].modal_transition_id = -1;
+	sys_mode_transition_table[i][j].in_use=1;
+      }
+      return i;
+    }
+  }
+  return -1;
+}
+
+int delete_sys_mode_transition(int stid){
+  int i;
+  sys_mode_transition_table[stid][0].in_use=0;
+  for (i=0;i<MAX_TRANSITIONS_IN_SYS_TRANSITIONS;i++){
+    sys_mode_transition_table[stid][i].in_use=0;
+    sys_mode_transition_table[stid][i].modal_transition_id=-1;
+    sys_mode_transition_table[stid][i].mrid=-1;
+  }
+  return 0;
+}
+
+int add_transition_to_sys_transition(int stid, int mrid, int mtid){
+  int i;
+  printk(KERN_INFO "add_trans_to_sys_trans stid: %d mird: %d mtid: %d\n",
+	 stid, mrid, mtid);
+  for (i=0;i<MAX_TRANSITIONS_IN_SYS_TRANSITIONS;i++){
+    if (sys_mode_transition_table[stid][i].mrid == -1){
+      sys_mode_transition_table[stid][i].mrid = mrid;
+      sys_mode_transition_table[stid][i].modal_transition_id = mtid;
+      return 0;
+    }
+  }
+  return -1;
+}
+
+int send_mode_change_signal(struct task_struct *task, int newmode){
+  struct siginfo info;
+  
+  info.si_signo = MODE_CHANGE_SIGNAL;
+  info.si_value.sival_int = newmode;
+  info.si_errno = 0; // no recovery?
+  info.si_code = SI_QUEUE;
+
+  if (send_sig_info(MODE_CHANGE_SIGNAL, &info, task)<0){
+    printk("error sending mode change signal\n");
+    return -1;
+  }
+
+  printk("mode(%d) change signal sent\n",newmode);
+  return 0;
+}
+
+unsigned long long latest_deadline_ns=0ll;
+unsigned long long end_of_transition_interval_ns=0ll;
+
+int sys_mode_transition(int stid){
+  int i;
+
+  // record the latest deadline among the running jobs as the end of transition.
+  end_of_transition_interval_ns = latest_deadline_ns;
+
+  printk(KERN_INFO "sys_mode_transition stid: %d end of transition: %llu ns\n",stid,end_of_transition_interval_ns);
+
+  for (i=0;i<MAX_TRANSITIONS_IN_SYS_TRANSITIONS;i++){
+    if (sys_mode_transition_table[stid][i].mrid == -1){
+      break;
+    }
+    mode_transition(sys_mode_transition_table[stid][i].mrid,
+		    sys_mode_transition_table[stid][i].modal_transition_id);
+  }
+  return 0;
+}
+
+long system_utility=0;
+
+int reschedule_stack[MAX_RESERVES];
+int top=-1;
+
+struct task_struct *gettask(int pid){
+  struct task_struct *tsk;
+  struct pid *pid_struct;
+  pid_struct = find_get_pid(pid);
+  tsk = pid_task(pid_struct,PIDTYPE_PID);
+  return tsk;
+}
+
+int push_to_reschedule(int i){
+	int ret;
+	unsigned long flags;
+	spin_lock_irqsave(&reschedule_lock,flags);
+	if ((top+1) < MAX_RESERVES){
+		top++;
+		reschedule_stack[top]=i;
+		ret =0;
+	} else	
+		ret=-1;
+
+	spin_unlock_irqrestore(&reschedule_lock,flags);
+	return ret;
+}
+
+int pop_to_reschedule(void){
+	int ret;
+	unsigned long flags;
+	spin_lock_irqsave(&reschedule_lock,flags);
+	if (top >=0){
+		ret = reschedule_stack[top];
+		top--;
+	} else
+		ret = -1;
+	spin_unlock_irqrestore(&reschedule_lock,flags);
+	return ret;
+}
+
+struct task_struct *sched_task;
+
+static void scheduler_task(void *a){
+	int rid;
+	struct sched_param p;
+	struct task_struct *task;
+
+	//set_current_state(TASK_INTERRUPTIBLE);
+	while (!kthread_should_stop()) {
+		while ((rid = pop_to_reschedule()) != -1) {
+		  //task = find_task_by_pid_ns(reserve_table[rid].pid, current->nsproxy->pid_ns);
+		  task = gettask(reserve_table[rid].pid);
+			if (task == NULL){
+				printk("scheduler_task : wrong pid(%d) for rid(%d)\n",reserve_table[rid].pid,rid);
+				continue;
+			}
+			if (reserve_table[rid].request_stop){
+				reserve_table[rid].request_stop = 0;
+				
+				//set_task_state(task, TASK_INTERRUPTIBLE);
+				printk(KERN_INFO "enforcing pid(%d)\n",reserve_table[rid].pid);
+				p.sched_priority = 0;
+				sched_setscheduler(task, SCHED_NORMAL, &p);
+
+				// measurement of enforcement
+				end_of_enforcement_ts_ns = ticks2nanos(rdtsc());
+				end_of_enforcement_ts_ns -= start_of_enforcement_ts_ns;
+				if (enforcement_latency_ns_avg == 0)
+				  enforcement_latency_ns_avg = end_of_enforcement_ts_ns;
+				else
+				  enforcement_latency_ns_avg = (enforcement_latency_ns_avg + end_of_enforcement_ts_ns) / 2;
+
+				if (end_of_enforcement_ts_ns > enforcement_latency_ns_worst)
+				  enforcement_latency_ns_worst = end_of_enforcement_ts_ns;
+				// end of measurement code
+			} else{
+				if (reserve_table[rid].critical_utility_mode_enforced){
+					reserve_table[rid].critical_utility_mode_enforced = 0;
+					//wake_up_process(task);
+				}
+				p.sched_priority = reserve_table[rid].effective_priority;
+				sched_setscheduler(task, SCHED_FIFO, &p);
+			}
+		}
+		set_current_state(TASK_INTERRUPTIBLE);
+		schedule();
+	}
+}
+
+int timer2reserve(struct hrtimer *tmr){
+	int i=0;
+	for (i=0;i<MAX_RESERVES;i++){
+		if (tmr == &(reserve_table[i].period_timer))
+			return i;
+		if (tmr == &(reserve_table[i].zs_timer))
+			return i;
+		if (tmr == &(reserve_table[i].response_time_timer))
+			return i;
+	}
+
+	return -1;
+}
+
+enum hrtimer_restart zs_instant_handler(struct hrtimer *timer){
+	int rid;
+	unsigned long flags;
+
+	spin_lock_irqsave(&zsrmlock,flags);
+	rid = timer2reserve(timer);
+	printk("zs_instant of reserveid:%d\n",rid);
+	if (rid == -1){
+		printk("zs_timer without reserve\n");
+		spin_unlock_irqrestore(&zsrmlock,flags);
+		return HRTIMER_NORESTART;
+	}
+	period_degradation(rid);
+	spin_unlock_irqrestore(&zsrmlock,flags);
+	return HRTIMER_NORESTART;
+}
+
+/* Returns the current period to be used in wait for next period*/
+struct timespec *get_current_effective_period(int rid){
+	if (reserve_table[rid].current_degraded_mode == -1){
+		return &(reserve_table[rid].params.period);
+	} else {
+		return &(reserve_table[rid].params.degraded_period[reserve_table[rid].current_degraded_mode]);
+	}
+}
+
+
+void record_latest_deadline(struct timespec *relative_deadline){
+  struct timespec now;
+  unsigned long long now_ns;
+  unsigned long long rdeadline_ns;
+
+  jiffies_to_timespec(jiffies, &now);
+  now_ns = ((unsigned long long)now.tv_sec) * 1000000000ll +
+    ((unsigned long long) now.tv_nsec);
+	
+  rdeadline_ns = ((unsigned long long)relative_deadline->tv_sec) * 1000000000ll+
+		  ((unsigned long long) relative_deadline->tv_nsec);
+  rdeadline_ns = now_ns+rdeadline_ns;
+
+  if (latest_deadline_ns < rdeadline_ns){
+    latest_deadline_ns = rdeadline_ns;
+  }
+}
+
+enum hrtimer_restart response_time_handler(struct hrtimer *timer){
+	unsigned long flags;
+	int rid;
+	struct task_struct *task;
+
+	start_of_enforcement_ts_ns = ticks2nanos(rdtsc());
+
+	spin_lock_irqsave(&zsrmlock,flags);
+	rid = timer2reserve(timer);
+	if (rid == -1){
+		printk("timer without reserve!");
+		spin_unlock_irqrestore(&zsrmlock,flags);
+		return HRTIMER_NORESTART;
+	}
+
+	//task = find_task_by_pid_ns(reserve_table[rid].pid, current->nsproxy->pid_ns);
+	task = gettask(reserve_table[rid].pid);
+	if (task == NULL){
+		printk("reserve without task\n");
+		spin_unlock_irqrestore(&zsrmlock,flags);
+		return HRTIMER_NORESTART;
+	}
+
+	//set_task_state(task,TASK_INTERRUPTIBLE);
+	//set_tsk_need_resched(task);
+	reserve_table[rid].request_stop =1;
+	push_to_reschedule(rid);
+	wake_up_process(sched_task);
+	set_tsk_need_resched(current);
+	
+	spin_unlock_irqrestore(&zsrmlock,flags);
+	return HRTIMER_NORESTART;
+}
+
+unsigned long long prev_ns=0;
+
+enum hrtimer_restart period_handler(struct hrtimer *timer){
+	struct task_struct *task;
+	int rid;
+	int mrid;
+	ktime_t kperiod, kzs;
+	ktime_t kresptime;
+	struct timespec *p;
+	unsigned long flags;
+	struct timespec now;
+	unsigned long long now_ns;
+	int newmode=0;
+	int oldmode=0;
+	int mode_change=0;
+
+	spin_lock_irqsave(&zsrmlock,flags);
+	jiffies_to_timespec(jiffies, &now);
+	now_ns = TIMESPEC2NS(&now);
+
+	arrival_ts_ns = ticks2nanos(rdtsc());
+
+	if (prev_ns == 0){
+	  prev_ns = now_ns;
+	} else {
+	  //unsigned long long dur_ns = (now_ns - prev_ns);
+	  prev_ns = now_ns;
+	  //printk(KERN_INFO "period_handler. elapse ns from previous: %llu\n",dur_ns);
+	}
+
+	rid = timer2reserve(timer);
+	if (rid == -1){
+		printk("timer without reserve!");
+		spin_unlock_irqrestore(&zsrmlock,flags);
+		return HRTIMER_NORESTART;
+	}
+
+	/* --- cancel all timers --- */
+	if (reserve_table[rid].params.enforcement_mask & ZS_RESPONSE_TIME_ENFORCEMENT_MASK){
+		hrtimer_cancel(&(reserve_table[rid].response_time_timer));
+	}
+	hrtimer_cancel(&(reserve_table[rid].zs_timer));
+	/* --------------------------*/
+
+	mrid = reserve_table[rid].parent_modal_reserve_id;
+
+	task = gettask(reserve_table[rid].pid);
+	if (task == NULL){
+	  printk("reserve without task\n");
+	  spin_unlock_irqrestore(&zsrmlock,flags);
+	  return HRTIMER_NORESTART;
+	}
+
+	if (modal_reserve_table[mrid].in_transition){
+	  if (modal_reserve_table[mrid].mode_change_pending){
+	    oldmode = modal_reserve_table[mrid].transitions[modal_reserve_table[mrid].active_transition].from_mode;
+	    newmode = modal_reserve_table[mrid].transitions[modal_reserve_table[mrid].active_transition].to_mode;
+	    modal_reserve_table[mrid].mode_change_pending=0;	    
+	    if (newmode != DISABLED_MODE){
+	      rid = modal_reserve_table[mrid].reserve_for_mode[newmode];
+	      modal_reserve_table[mrid].mode = newmode;
+	      //printk(KERN_INFO "start of period: activating mode %d rid %d\n",newmode, rid);
+	      // transition into non-suspension mode
+	      
+	    } else {
+	      // DO NOT WAKE THE PROCESS
+	      // transition into suspension
+	      modal_reserve_table[mrid].mode = newmode;
+	    }
+	    mode_change=1;
+	  } else {
+	    mode_change=0;
+	  }
+
+	  if (end_of_transition_interval_ns <= now_ns){
+	    // end of transition
+	    modal_reserve_table[mrid].in_transition=0;
+	    modal_reserve_table[mrid].active_transition=-1;	    
+	    //printk(KERN_INFO "End of transition interval\n");
+	  }
+	}
+
+	if (newmode != DISABLED_MODE){
+	  p = get_current_effective_period(rid);
+	  wake_up_process(task);
+	  printk(KERN_INFO "Wakeup(task) 1\n");
+
+	  //printk(KERN_INFO "period timer : %ld secs: %ld ns \n",p->tv_sec, p->tv_nsec);
+	  kperiod = ktime_set(p->tv_sec,p->tv_nsec);
+	  hrtimer_init(&(reserve_table[rid].period_timer),CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	  reserve_table[rid].period_timer.function = period_handler;
+	  hrtimer_start(&(reserve_table[rid].period_timer), kperiod, HRTIMER_MODE_REL);
+
+	  if (reserve_table[rid].params.enforcement_mask & ZS_RESPONSE_TIME_ENFORCEMENT_MASK){
+	    // cancelled at begining of function
+	    //hrtimer_cancel(&(reserve_table[rid].response_time_timer));
+	    kresptime = ktime_set(reserve_table[rid].params.response_time_instant.tv_sec,
+				  reserve_table[rid].params.response_time_instant.tv_nsec);
+	    hrtimer_init(&(reserve_table[rid].response_time_timer), CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	    reserve_table[rid].response_time_timer.function = response_time_handler;
+	    hrtimer_start(&(reserve_table[rid].response_time_timer),kresptime, HRTIMER_MODE_REL);
+	  }
+	  //cancelled at start of function
+	  //hrtimer_cancel(&(reserve_table[rid].zs_timer));
+
+	  if (modal_reserve_table[mrid].in_transition){
+	    struct timespec *trans_zsp = &(modal_reserve_table[mrid].transitions[modal_reserve_table[mrid].active_transition].zs_instant);
+	    kzs = ktime_set(trans_zsp->tv_sec,trans_zsp->tv_nsec);
+	  } else {
+	    kzs = ktime_set(reserve_table[rid].params.zs_instant.tv_sec, 
+			    reserve_table[rid].params.zs_instant.tv_nsec);
+	    //printk("period_handler: zs_instant sec:%lu nsec:%lu\n ",reserve_table[rid].params.zs_instant.tv_sec,
+	    //   reserve_table[rid].params.zs_instant.tv_nsec);
+	  }
+	  hrtimer_init(&(reserve_table[rid].zs_timer),CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	  reserve_table[rid].zs_timer.function = zs_instant_handler;
+	  hrtimer_start(&(reserve_table[rid].zs_timer), kzs, HRTIMER_MODE_REL);
+	  jiffies_to_timespec(jiffies, &reserve_table[rid].start_of_period);
+	  record_latest_deadline(&(reserve_table[rid].params.period));
+	  //printk("waking up process: %d at %ld:%ld\n",reserve_table[rid].pid,now.tv_sec, now.tv_nsec);
+	  reserve_table[rid].effective_priority = (reserve_table[rid].current_degraded_mode == -1) ? reserve_table[rid].params.priority :
+	    reserve_table[rid].params.degraded_priority[reserve_table[rid].current_degraded_mode];
+	  push_to_reschedule(rid);
+	  wake_up_process(sched_task);
+	  set_tsk_need_resched(task);
+	  set_tsk_need_resched(current);
+	  //set_tsk_need_resched(sched_task);
+	}
+
+	if (!mode_change){
+	  no_mode_change_ts_ns = ticks2nanos(rdtsc());
+	  no_mode_change_ts_ns -= arrival_ts_ns;
+	  arrival_no_mode_ns_avg = (arrival_no_mode_ns_avg + no_mode_change_ts_ns) /2;
+	  if (arrival_no_mode_ns_worst < no_mode_change_ts_ns){
+	    arrival_no_mode_ns_worst = no_mode_change_ts_ns;
+	  }
+	} else {
+	  if (newmode == DISABLED_MODE){
+	    // transition into suspension
+	    trans_into_susp_ts_ns = ticks2nanos(rdtsc());
+	    trans_into_susp_ts_ns -= arrival_ts_ns;
+	    transition_into_susp_ns_avg = (transition_into_susp_ns_avg + trans_into_susp_ts_ns) / 2;
+	    if (transition_into_susp_ns_worst < trans_into_susp_ts_ns){
+	      transition_into_susp_ns_worst = trans_into_susp_ts_ns;
+	    }
+	  } else if (oldmode == DISABLED_MODE){
+	    // transition into suspension
+	    trans_from_susp_ts_ns = ticks2nanos(rdtsc());
+	    trans_from_susp_ts_ns -= arrival_ts_ns;
+	    transition_from_susp_ns_avg = (transition_from_susp_ns_avg + trans_from_susp_ts_ns) / 2;
+	    if (transition_from_susp_ns_worst < trans_from_susp_ts_ns){
+	      transition_from_susp_ns_worst = trans_from_susp_ts_ns;
+	    }
+	  } else {
+	    mode_change_ts_ns= ticks2nanos(rdtsc());
+	    mode_change_ts_ns -= arrival_ts_ns;
+	    arrival_mode_ns_avg = (arrival_mode_ns_avg + mode_change_ts_ns) / 2;
+	    if (arrival_mode_ns_worst < mode_change_ts_ns){
+	      arrival_mode_ns_worst = mode_change_ts_ns;
+	    }
+	  }
+	}
+	spin_unlock_irqrestore(&zsrmlock,flags);
+	return HRTIMER_NORESTART;
+}
+
+
+int get_jiffies_ms(void){
+	return (int) (jiffies * 1000 / HZ);
+}
+
+void delete_all_modal_reserves(void){
+  int i;
+
+  for (i=0;i<MAX_MODAL_RESERVES;i++){
+    modal_reserve_table[i].in_use=0;
+  }
+}
+
+int set_initial_mode_modal_reserve(int mrid,int initmode){
+  modal_reserve_table[mrid].mode = initmode;
+  return 0;
+}
+
+int create_modal_reserve(int num_modes){
+  int i;
+
+  for (i=0;i<MAX_MODAL_RESERVES;i++){
+    if (!modal_reserve_table[i].in_use){
+      modal_reserve_table[i].in_use=1;
+      modal_reserve_table[i].num_modes = num_modes;
+      modal_reserve_table[i].mode=0;
+      return i;
+    }
+  }
+
+  return -1;
+}
+
+int add_reserve_to_mode(int mrsvid, int mode, int rsvid){
+  modal_reserve_table[mrsvid].reserve_for_mode[mode] = rsvid;
+  reserve_table[rsvid].parent_modal_reserve_id = mrsvid;
+  return 0;
+}
+
+int add_mode_transition(int mrid, int transition_id, struct zs_mode_transition *ptransition){
+  memcpy(&(modal_reserve_table[mrid].transitions[transition_id]),
+	 ptransition,sizeof(struct zs_mode_transition));
+  return 0;
+}
+
+
+/*
+  The system mode transition is composed of a series of 
+  individual reserve mode transitions execute executed in sequence.
+  This individual reserve transitions will be grouped in a system mode
+  transition to avoid multiple system calls
+ */
+int mode_transition(int mrid, int tid){
+  ktime_t kzs;
+  struct timespec now;
+  unsigned long long now_ns;
+  unsigned long long abs_zsi;
+  unsigned long long start_of_period_ns;
+  struct timespec time_to_zsi;
+  struct task_struct *task;
+
+  int mode = modal_reserve_table[mrid].mode;
+  int rid=0;
+  int debug_to_mode,debug_from_mode;
+
+  task = gettask(modal_reserve_table[mrid].pid);
+
+  if (task == NULL){
+    printk("mode_transition: modal reserve(%d) without task\n",mrid);
+    return -1;
+  }
+  // send the signal -- this is now back in the user-mode mode-change manager
+  //send_mode_change_signal(task, modal_reserve_table[mrid].transitions[tid].to_mode);
+
+  debug_to_mode = modal_reserve_table[mrid].transitions[tid].to_mode;
+  debug_from_mode = modal_reserve_table[mrid].transitions[tid].from_mode;
+
+  printk("MZSRMM.mode_transition: pid(%d) from mode(%d) to mode(%d) current mode(%d)\n",modal_reserve_table[mrid].pid, debug_from_mode,debug_to_mode,mode);
+
+
+  if (mode == DISABLED_MODE){
+    // wake up the task immediately
+    printk(KERN_INFO "mode_transition from DISABLED_RESERVE\n");
+    wake_up_process(task);
+    //set_task_state(task,); // do we need this?
+    printk(KERN_INFO "Wakeup(task) 2\n");
+    
+    set_tsk_need_resched(task);
+    
+    // and install the reservation immediately with the target reservation
+    rid = modal_reserve_table[mrid].reserve_for_mode[modal_reserve_table[mrid].transitions[tid].to_mode];
+    modal_reserve_table[mrid].mode = modal_reserve_table[mrid].transitions[tid].to_mode;
+    attach_reserve_transitional(rid, modal_reserve_table[mrid].pid, 
+				&(modal_reserve_table[mrid].transitions[tid].zs_instant));
+
+  } else {
+    struct timespec *zsts = &(modal_reserve_table[mrid].transitions[tid].zs_instant);
+
+    rid = modal_reserve_table[mrid].reserve_for_mode[mode];
+    printk(KERN_INFO "mode_transition() rid: %d\n",rid );
+
+
+    start_of_period_ns = ((unsigned long long)reserve_table[rid].start_of_period.tv_sec) * 1000000000ll+
+      (unsigned long long) reserve_table[rid].start_of_period.tv_nsec;
+    abs_zsi = ((unsigned long long)zsts->tv_sec)* 1000000000ll + (unsigned long long) zsts->tv_nsec;
+    abs_zsi = start_of_period_ns + abs_zsi;
+    jiffies_to_timespec(jiffies, &now);
+    now_ns = ((unsigned long long) now.tv_sec) * 1000000000ll + (unsigned long long) now.tv_nsec;
+
+    // moved to sys_mode_transition
+    // record the latest deadline among the running jobs as the end of transition.
+    //end_of_transition_interval_ns = latest_deadline_ns;
+
+    // mark transition as active
+    modal_reserve_table[mrid].in_transition=1;
+    modal_reserve_table[mrid].active_transition=tid;
+    modal_reserve_table[mrid].mode_change_pending=1;
+
+    printk(KERN_INFO "mode_transition. tid: %d\n",tid);
+
+    // we will point to target reserve in next period arrival
+
+    if (abs_zsi <= now_ns ){
+      // transitional zs instant already elapsed.
+      // Immediate enforcement
+      printk(KERN_INFO "mode_transition: immediate period_degradation\n");
+      period_degradation(rid);
+    } else { // abs_zsi >= now_ns
+      // we need to setup the timer in the source reserve zs timer
+      // this timer should remain active for all the jobs of this
+      // task that arrive before the end_of_transition_interval_ns
+      // TODO: handle end of the interval
+
+      abs_zsi = abs_zsi - now_ns;
+    
+      time_to_zsi.tv_sec=abs_zsi / 1000000000ll;
+      time_to_zsi.tv_nsec=abs_zsi % 1000000000ll;
+
+      printk("mode_transition: delayed transitional zsi to expire in %lu:%lu \n",time_to_zsi.tv_sec, time_to_zsi.tv_nsec);
+
+      hrtimer_cancel(&(reserve_table[rid].zs_timer));
+      kzs = ktime_set(time_to_zsi.tv_sec, 
+		      time_to_zsi.tv_nsec);
+      hrtimer_init(&(reserve_table[rid].zs_timer),CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+      reserve_table[rid].zs_timer.function = zs_instant_handler;
+      hrtimer_start(&(reserve_table[rid].zs_timer), kzs, HRTIMER_MODE_REL);    
+    }
+  }
+
+  return 0;
+}
+
+int attach_modal_reserve(int mrid, int pid){
+  int i;
+
+  modal_reserve_table[mrid].pid = pid;
+  for (i=0;i<modal_reserve_table[mrid].num_modes;i++){
+    reserve_table[modal_reserve_table[mrid].reserve_for_mode[i]].pid = pid;
+  }
+
+  if (modal_reserve_table[mrid].mode != DISABLED_MODE){
+    attach_reserve(modal_reserve_table[mrid].reserve_for_mode[modal_reserve_table[mrid].mode],pid);
+  }
+
+  return 0;
+}
+
+
+int create_reserve(int rid){
+	return 0;
+}
+
+int attach_reserve(int rid, int pid){
+  return attach_reserve_transitional(rid, pid, NULL);
+}
+
+int attach_reserve_transitional(int rid, int pid, struct timespec *trans_zs_instant){
+	struct sched_param p;
+	ktime_t kperiod, kzs,kresptime;
+
+	struct task_struct *task;
+	//task = find_task_by_pid_ns(pid, current->nsproxy->pid_ns);
+	task = gettask(pid);
+	if (task == NULL)
+		return -1;
+
+	reserve_table[rid].pid = pid;
+	reserve_table[rid].in_critical_mode = 0;
+	reserve_table[rid].current_degraded_mode = -1;
+	reserve_table[rid].critical_utility_mode_enforced = 0;
+	p.sched_priority = reserve_table[rid].params.priority;
+	sched_setscheduler(task,SCHED_FIFO, &p);
+
+	kperiod = ktime_set(reserve_table[rid].params.period.tv_sec, 
+			reserve_table[rid].params.period.tv_nsec);
+	hrtimer_init(&reserve_table[rid].period_timer,CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	reserve_table[rid].period_timer.function = period_handler;
+	hrtimer_start(&reserve_table[rid].period_timer, kperiod, HRTIMER_MODE_REL);
+
+	if (trans_zs_instant != NULL){
+	  kzs = ktime_set(trans_zs_instant->tv_sec,
+			  trans_zs_instant->tv_nsec);
+	} else {
+	  kzs = ktime_set(reserve_table[rid].params.zs_instant.tv_sec, 
+			  reserve_table[rid].params.zs_instant.tv_nsec);
+	}
+	hrtimer_init(&reserve_table[rid].zs_timer,CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	reserve_table[rid].zs_timer.function = zs_instant_handler;
+	hrtimer_start(&reserve_table[rid].zs_timer, kzs, HRTIMER_MODE_REL);
+
+	if (reserve_table[rid].params.enforcement_mask & ZS_RESPONSE_TIME_ENFORCEMENT_MASK){
+		kresptime = ktime_set(reserve_table[rid].params.response_time_instant.tv_sec,
+				reserve_table[rid].params.response_time_instant.tv_nsec);
+		hrtimer_init(&(reserve_table[rid].response_time_timer), CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+		reserve_table[rid].response_time_timer.function = response_time_handler;
+		hrtimer_start(&(reserve_table[rid].response_time_timer),kresptime, HRTIMER_MODE_REL);
+	}
+
+	jiffies_to_timespec(jiffies, &reserve_table[rid].start_of_period);
+
+	set_tsk_need_resched(task);
+	set_tsk_need_resched(current);
+	return 0;
+}
+
+int find_empty_entry(void){
+	int i=0;
+
+	while (i < MAX_RESERVES && reserve_table[i].params.priority != -1  )
+		i++;
+	if (i< MAX_RESERVES){
+		reserve_table[i].params.priority = 0;
+		return i;
+	} else {
+		return -1;
+	}
+}
+
+void finish_period_degradation(int rid){
+	long max_marginal_utility=0;
+	long tmp_marginal_utility=0;
+	int i;
+
+	reserve_table[rid].in_critical_mode = 0;
+	
+	// find the max marginal utility of reserves
+	// in critical mode
+	for (i=0;i<MAX_RESERVES; i++){
+		// empty reserves
+		if (reserve_table[i].params.priority == -1)
+			continue; 
+		if (!reserve_table[i].in_critical_mode)
+			continue;
+
+		tmp_marginal_utility = 	GET_EFFECTIVE_UTILITY(i);
+		if (tmp_marginal_utility > max_marginal_utility)
+			max_marginal_utility = tmp_marginal_utility;
+	}
+
+	system_utility = max_marginal_utility;
+
+	for (i=0; i< MAX_RESERVES; i++){
+		// empty reserves
+		if (reserve_table[i].params.priority == -1)
+			continue; 
+
+		if (reserve_table[i].params.overloaded_marginal_utility >= system_utility){
+			reserve_table[i].effective_priority = reserve_table[i].params.priority;
+			push_to_reschedule(i);
+			reserve_table[i].current_degraded_mode = -1;
+			reserve_table[i].just_returned_from_degradation=1;
+		} else {
+			int selected_mode=0;
+			while(selected_mode < reserve_table[i].params.num_degraded_modes &&
+				reserve_table[i].params.degraded_marginal_utility[selected_mode][1] < system_utility)
+				selected_mode++;
+			if (selected_mode < reserve_table[i].params.num_degraded_modes){
+				reserve_table[i].current_degraded_mode = selected_mode;
+				reserve_table[i].effective_priority = reserve_table[i].params.degraded_priority[selected_mode];
+				push_to_reschedule(i);
+			}
+		}
+	}
+	wake_up_process(sched_task);
+	set_tsk_need_resched(current);
+}
+
+void try_resume_normal_period(int rid){
+	unsigned long long zs_elapsed_ns;
+	unsigned long long newperiod_ns;
+	struct timespec now;
+	unsigned long long now_ns, secs;
+	unsigned long long jiffy_ns;
+	u32 ns_reminder;
+	ktime_t kperiod;
+
+	jiffies_to_timespec(jiffies, &now);
+	now_ns = ((unsigned long long) now.tv_sec) * 1000000000ll + (unsigned long long) now.tv_nsec;
+	zs_elapsed_ns = ((unsigned long long)reserve_table[rid].start_of_period.tv_sec) * 1000000000ll + (unsigned long long) reserve_table[rid].start_of_period.tv_nsec;
+	zs_elapsed_ns = now_ns - zs_elapsed_ns;
+	newperiod_ns = ((unsigned long long) reserve_table[rid].params.period.tv_sec) * 1000000000ll + (unsigned long long) reserve_table[rid].params.period.tv_nsec;
+
+	// do we still have time to return to previous period?
+	if (newperiod_ns > zs_elapsed_ns){
+		newperiod_ns = newperiod_ns - zs_elapsed_ns;
+		jiffy_ns = div_u64(1000000000ll,HZ);
+		// greater than a jiffy?
+		if (newperiod_ns > jiffy_ns){
+			hrtimer_cancel(&(reserve_table[rid].period_timer));
+			secs = div_u64_rem(newperiod_ns, 1000000000L, &ns_reminder);
+			kperiod = ktime_set(secs, ns_reminder);
+			hrtimer_init(&(reserve_table[rid].period_timer),CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+			reserve_table[rid].period_timer.function = period_handler;
+			hrtimer_start(&(reserve_table[rid].period_timer), kperiod, HRTIMER_MODE_REL);
+		}
+	}
+}
+
+void extend_period_timer(int rid, struct timespec *p){
+	unsigned long long zs_elapsed_ns;
+	unsigned long long newperiod_ns;
+	struct timespec now;
+	unsigned long long now_ns, secs;
+	u32 ns_reminder;
+	ktime_t kperiod;
+
+	jiffies_to_timespec(jiffies, &now);
+	now_ns = ((unsigned long long) now.tv_sec) * 1000000000ll + (unsigned long long) now.tv_nsec;
+	zs_elapsed_ns = ((unsigned long long)reserve_table[rid].start_of_period.tv_sec) * 1000000000ll + (unsigned long long) reserve_table[rid].start_of_period.tv_nsec;
+	zs_elapsed_ns = now_ns - zs_elapsed_ns;
+	newperiod_ns = ((unsigned long long) p->tv_sec) * 1000000000ll + (unsigned long long) p->tv_nsec;
+
+	// check whether the current elapsed time is already larger than the new period
+	// this could happen because the global variable jiffies is incremented every 10ms.
+	if (newperiod_ns > zs_elapsed_ns){
+		newperiod_ns = newperiod_ns - zs_elapsed_ns;
+
+		hrtimer_cancel(&(reserve_table[rid].period_timer));
+
+		secs = div_u64_rem(newperiod_ns, 1000000000L, &ns_reminder);
+		kperiod = ktime_set(secs, ns_reminder);
+		hrtimer_init(&(reserve_table[rid].period_timer),CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+		reserve_table[rid].period_timer.function = period_handler;
+		hrtimer_start(&(reserve_table[rid].period_timer), kperiod, HRTIMER_MODE_REL);
+	}
+}
+
+void period_degradation(int rid){
+	long current_marginal_utility;
+	long tmp_marginal_utility;
+	//struct task_struct *task;
+	int i,j;
+
+	printk(KERN_INFO "period degradation:start\n");
+	current_marginal_utility = GET_EFFECTIVE_UTILITY(rid);
+
+	reserve_table[rid].in_critical_mode = 1;
+
+	printk(KERN_INFO "period degradation rid(%d) curr utility: %ld, system_utility: %ld\n",rid,current_marginal_utility, system_utility);
+	if (system_utility < current_marginal_utility){
+		system_utility = current_marginal_utility;
+		if (reserve_table[rid].params.critical_util_degraded_mode != -1){
+			if (reserve_table[rid].current_degraded_mode == -1 || reserve_table[rid].current_degraded_mode < reserve_table[rid].params.critical_util_degraded_mode){
+				reserve_table[rid].current_degraded_mode = reserve_table[rid].params.critical_util_degraded_mode;
+				extend_period_timer(rid, &reserve_table[rid].params.degraded_period[reserve_table[rid].params.critical_util_degraded_mode]);
+				reserve_table[rid].effective_priority = reserve_table[rid].params.degraded_priority[reserve_table[rid].current_degraded_mode];
+				push_to_reschedule(rid);
+			}
+		}
+	}
+
+	// now degrade all others
+	
+	//for (i=0; i< MAX_RESERVES; i++){
+	for (j=0;j< MAX_MODAL_RESERVES;j++){
+	  if (!modal_reserve_table[j].in_use)
+	    continue;
+	  // get the normal reseve
+	  i = modal_reserve_table[j].reserve_for_mode[modal_reserve_table[j].mode];
+
+	  // skip empty reserves
+	  if (reserve_table[i].params.priority == -1)
+	    continue;
+	  
+
+	  tmp_marginal_utility = GET_EFFECTIVE_UTILITY(i);
+	  
+	  printk(KERN_INFO "period degradation checking rid(%d) util:%ld sysutil:%ld\n",i,tmp_marginal_utility, system_utility);
+	  if (tmp_marginal_utility < system_utility){
+	    int selected_mode=0;
+	    while(selected_mode < (reserve_table[i].params.num_degraded_modes) &&
+		  reserve_table[i].params.degraded_marginal_utility[selected_mode][1] < system_utility)
+	      selected_mode++;
+	    if (selected_mode < reserve_table[i].params.num_degraded_modes){
+	      reserve_table[i].current_degraded_mode = selected_mode;
+	      reserve_table[i].just_returned_from_degradation=0;
+	      extend_period_timer(i, &reserve_table[i].params.degraded_period[selected_mode]);
+	      reserve_table[i].effective_priority = reserve_table[i].params.degraded_priority[selected_mode];
+	      push_to_reschedule(i);
+	    } else {
+	      // stop the task
+	      reserve_table[i].critical_utility_mode_enforced = 1;
+	      reserve_table[i].just_returned_from_degradation=0;
+	      
+	      printk(KERN_INFO "period degrad: stopping task\n");
+	      reserve_table[i].request_stop = 1;
+	      push_to_reschedule(i);
+	      wake_up_process(sched_task);
+	      set_tsk_need_resched(current);
+	      
+	      
+	      //task = gettask(reserve_table[i].pid);
+	      /*
+		if (task != NULL){
+		task->state = TASK_INTERRUPTIBLE;
+		set_tsk_need_resched(task);
+		}
+	      */
+	    }
+	  }
+	}
+	wake_up_process(sched_task);
+	set_tsk_need_resched(current);
+}
+
+int modal_wait_for_next_period(int mrid){
+  int mode = modal_reserve_table[mrid].mode;
+  if (mode == DISABLED_MODE){
+    // need to cancel timers from previous period!
+    // we need to know whether the mode change req happen
+    // during the waitfornextperiod or during the execution, i.e.,
+    // if occurs after calling wfnp means that the timers are
+    // already cancelled, if not we need to cancel them explicitly.
+    //
+    // if the wfnp is called in a disabled mode it means that 
+    // this is the last call to block the task until another mode
+    // change happens. This means that we need to clean up the
+    // previous mode timers.
+    set_current_state(TASK_UNINTERRUPTIBLE);
+  } else {
+    int rid = modal_reserve_table[mrid].reserve_for_mode[mode];
+    wait_for_next_period(rid);
+  }
+  return 0;
+}
+
+int wait_for_next_period(int rid){
+	hrtimer_cancel(&(reserve_table[rid].zs_timer));
+	if (reserve_table[rid].params.enforcement_mask & ZS_RESPONSE_TIME_ENFORCEMENT_MASK){
+		hrtimer_cancel(&(reserve_table[rid].response_time_timer));
+	}
+	if (reserve_table[rid].in_critical_mode){
+		finish_period_degradation(rid);
+	}
+	if (reserve_table[rid].just_returned_from_degradation){
+		reserve_table[rid].just_returned_from_degradation = 0;
+		// Dio: it seems that this is unstable.
+		//try_resume_normal_period(rid);
+	}
+
+	// create loop to check if the task was interrupted 
+	// by a signal that was sent to it and if so go back
+	// to sleep.
+	set_current_state(TASK_UNINTERRUPTIBLE);
+	return 0;
+}
+
+int delete_reserve(int rid){
+	if (reserve_table[rid].pid != -1){
+		detach_reserve(rid);
+	}
+	reserve_table[rid].params.priority = -1;	
+	return 0;
+}
+
+int delete_modal_reserve(int mrid){
+  if (modal_reserve_table[mrid].pid !=-1){
+    detach_modal_reserve(mrid);
+  }
+  modal_reserve_table[mrid].in_use=0;
+  modal_reserve_table[mrid].mode=0;
+  return 0;
+}
+
+int detach_modal_reserve(int mrid){
+  int i;
+  // ToDo: Do we need to do something special when in transition?
+  // we can assume/enforce that no detach call will be received during a 
+  // transition
+  if (modal_reserve_table[mrid].in_transition){
+    // don't allow detachment in the middle of a transition
+    return -1;
+  }
+
+  detach_reserve(modal_reserve_table[mrid].reserve_for_mode[modal_reserve_table[mrid].mode]);
+
+  modal_reserve_table[mrid].pid = -1;
+  for (i=0;i<modal_reserve_table[mrid].num_modes;i++){
+    reserve_table[modal_reserve_table[mrid].reserve_for_mode[i]].pid = -1;
+  }
+
+  return 0;
+}
+
+int detach_reserve(int rid){
+	struct sched_param p;
+	struct task_struct *task;
+	task = gettask(reserve_table[rid].pid);
+
+	if (task != NULL){
+		p.sched_priority = 0;
+		sched_setscheduler(task, SCHED_NORMAL,&p);
+		set_tsk_need_resched(task);
+		if (task != current)
+			set_tsk_need_resched(current);
+	}
+
+	hrtimer_cancel(&(reserve_table[rid].zs_timer));
+	hrtimer_cancel(&(reserve_table[rid].period_timer));
+	if (reserve_table[rid].params.enforcement_mask & ZS_RESPONSE_TIME_ENFORCEMENT_MASK){
+		hrtimer_cancel(&(reserve_table[rid].response_time_timer));
+	}
+	// mark as detached
+	reserve_table[rid].pid = -1;
+	return 0;
+}
+
+void init(void){
+  int i,j;
+
+	for (i=0;i<MAX_RESERVES;i++){
+		reserve_table[i].params.priority = -1; // mark as empty
+		reserve_table[i].params.enforcement_mask = 0;
+		reserve_table[i].current_degraded_mode = -1;
+		reserve_table[i].just_returned_from_degradation=0;
+		reserve_table[i].in_critical_mode = 0;
+		reserve_table[i].pid = -1;
+		reserve_table[i].request_stop = 0;
+		reserve_table[i].parent_modal_reserve_id=-1;
+	}
+
+	for (i=0;i<MAX_MODAL_RESERVES;i++){
+	  modal_reserve_table[i].in_use=0;
+	  modal_reserve_table[i].pid=-1;
+	  modal_reserve_table[i].mode=0;
+	  modal_reserve_table[i].in_transition=0;
+	  modal_reserve_table[i].active_transition=-1;
+	  modal_reserve_table[i].mode_change_pending=0;
+	  modal_reserve_table[i].num_modes=0;
+	  modal_reserve_table[i].num_transitions=0;
+	  for (j=0;j<MAX_RESERVES;j++){
+	    modal_reserve_table[i].reserve_for_mode[j]=-1;
+	  }
+	}
+
+	init_sys_mode_transitions();
+}
+
+void delete_all_reserves(void){
+	int i;
+
+	for (i=0;i<MAX_RESERVES;i++){
+		if (reserve_table[i].params.priority != -1){
+			delete_reserve(i);
+		}
+	}
+}
+
+
+/* dummy function. */
+static int zsrm_open(struct inode *inode, struct file *filp)
+{
+	return 0;
+}
+
+/* dummy function. */
+static int zsrm_release(struct inode *inode, struct file *filp)
+{
+	return 0;
+}
+
+
+static ssize_t zsrm_write
+(struct file *file, const char *buf, size_t count, loff_t *offset)
+{
+	int need_reschedule=0;
+	int res = 0, i;
+	struct api_call call;
+	unsigned long flags;
+
+	/* copy data to kernel buffer. */
+	if (copy_from_user(&call, buf, count)) {
+		printk(KERN_WARNING "ZSRMM: failed to copy data.\n");
+		return -EFAULT;
+	}
+	
+	spin_lock_irqsave(&zsrmlock,flags);
+	switch (call.api_id) {
+	case CREATE_RESERVE:
+		i = find_empty_entry();
+		if (i==-1)
+			res = -1;
+		else {	
+			memcpy(&reserve_table[i].params,
+				&(call.args.reserve_parameters), 
+				sizeof(struct zs_reserve_params));
+			if (reserve_table[i].params.reserve_type == CRITICALITY_RESERVE){
+			  reserve_table[i].params.normal_marginal_utility = reserve_table[i].params.criticality;
+			  reserve_table[i].params.overloaded_marginal_utility = reserve_table[i].params.criticality;
+			  reserve_table[i].params.critical_util_degraded_mode = -1;
+			  reserve_table[i].params.num_degraded_modes=0;
+			  printk("create reserve id(%d) CRITICALITY RESERVE\n",i);
+			} else {
+			  printk("create reserve id(%d) OTHER RESERVE\n",i);
+			}
+				create_reserve(i);
+				res = i;
+		}
+		break;
+	case CREATE_MODAL_RESERVE:
+	  i = create_modal_reserve(call.args.num_modes);
+	  res = i;
+	  break;
+	case SET_INITIAL_MODE_MODAL_RESERVE:
+	  res = set_initial_mode_modal_reserve(call.args.set_initial_mode_params.modal_reserve_id,
+					       call.args.set_initial_mode_params.initial_mode_id);
+	  break;
+	case ADD_RESERVE_TO_MODE:
+	  add_reserve_to_mode(call.args.rsv_to_mode_params.modal_reserve_id, 
+			      call.args.rsv_to_mode_params.mode_id,
+			      call.args.rsv_to_mode_params.reserve_id);
+	  break;
+	case ADD_MODE_TRANSITION:
+	  add_mode_transition(call.args.add_mode_transition_params.modal_reserve_id, 
+			      call.args.add_mode_transition_params.transition_id,
+			      &call.args.add_mode_transition_params.transition);  
+	  break;
+	case ATTACH_MODAL_RESERVE:
+	    attach_modal_reserve(call.args.attach_params.reserveid,
+				 call.args.attach_params.pid);
+	  break;
+	case DETACH_MODAL_RESERVE:
+	  detach_modal_reserve(call.args.reserveid);
+	  break;
+	case DELETE_MODAL_RESERVE:
+	  delete_modal_reserve(call.args.reserveid);
+	  break;
+	case CREATE_SYS_TRANSITION:
+	  res = create_sys_mode_transition();
+	  break;
+	case ADD_TRANSITION_TO_SYS_TRANSITION:
+	  res = add_transition_to_sys_transition(call.args.trans_to_sys_trans_params.sys_transition_id,
+						 call.args.trans_to_sys_trans_params.mrid,
+						 call.args.trans_to_sys_trans_params.transition_id);
+	  break;
+	case DELETE_SYS_TRANSITION:
+	  res = delete_sys_mode_transition(call.args.reserveid);
+	  break;
+	case MODE_SWITCH:
+	  request_mode_change_ts_ns = ticks2nanos(rdtsc());
+	  sys_mode_transition(call.args.mode_switch_params.transition_id);
+	  mode_change_signals_sent_ts_ns=ticks2nanos(rdtsc());
+	  mode_change_signals_sent_ts_ns -= request_mode_change_ts_ns;
+	  mode_change_latency_ns_avg = (mode_change_latency_ns_avg + 
+					mode_change_signals_sent_ts_ns) / 2;
+	  if (mode_change_signals_sent_ts_ns > mode_change_latency_ns_worst)
+	    mode_change_latency_ns_worst = mode_change_signals_sent_ts_ns;
+
+	  need_reschedule = 1;
+	  break;
+	case ATTACH_RESERVE:
+		res = attach_reserve(call.args.attach_params.reserveid, 
+				call.args.attach_params.pid);
+		break;
+	case DETACH_RESERVE:
+		res = detach_reserve(call.args.reserveid);
+		break;
+	case DELETE_RESERVE:
+		res = delete_reserve(call.args.reserveid);
+		break;
+	case WAIT_NEXT_PERIOD:
+		res = modal_wait_for_next_period(call.args.reserveid);
+		need_reschedule = 1;
+		break;
+	case GET_JIFFIES_MS:
+		res = get_jiffies_ms();
+		break;
+	case PRINT_STATS:
+	  res=print_stats();
+	  break;
+	default: /* illegal api identifier. */
+		res = -1;
+		printk(KERN_WARNING "ZSRMM: illegal API identifier.\n");
+		break;
+	}
+	spin_unlock_irqrestore(&zsrmlock,flags);
+	if (need_reschedule){
+		schedule();
+	}
+	return res;
+}
+
+// dummy
+#if LINUX_KERNEL_MINOR_VERSION >= 37 /* we don't believe LINUX_VERSION_CODE */
+static long zsrm_ioctl(struct file *file,
+					   unsigned int cmd, 
+					   unsigned long arg)
+#else
+static int zsrm_ioctl(struct inode *inode,
+					   struct file *file,
+					   unsigned int cmd, 
+					   unsigned long arg)
+#endif
+{
+	return 0;
+}
+
+static struct file_operations zsrm_fops;
+/*
+ = {
+	.owner = THIS_MODULE,
+	.open = zsrm_open, / do nothing but must exist. /
+	.release = zsrm_release, / do nothing but must exist. /
+	.read = NULL,
+	.write = zsrm_write,
+#if LINUX_KERNEL_MINOR_VERSION >= 37
+	.unlocked_ioctl = zsrm_ioctl
+#else
+	.ioctl = zsrm_ioctl
+#endif
+};
+*/
+
+static int __init zsrm_init(void)
+{
+	int ret;
+	struct sched_param p;
+
+	init();
+	printk(KERN_INFO "ZSRMM: HELLO!\n");
+
+	calibrate_ticks();
+
+	test_ticks();
+
+	/* get the device number of a char device. */
+	ret = alloc_chrdev_region(&dev_id, 0, 1, "mzsrmm");
+	if (ret < 0) {
+		printk(KERN_WARNING "ZSRMM: failed to allocate device.\n");
+		return ret;
+	}
+
+	// initialize the fops 
+	zsrm_fops.owner = THIS_MODULE;
+	zsrm_fops.open = zsrm_open;
+	zsrm_fops.release = zsrm_release;
+	zsrm_fops.read = NULL;
+	zsrm_fops.write = zsrm_write;
+#if LINUX_KERNEL_MINOR_VERSION >=37
+	zsrm_fops.unlocked_ioctl = zsrm_ioctl;
+#else
+	zsrm_fops.ioctl = zsrm_ioctl;
+#endif
+	/* initialize the char device. */
+	cdev_init(&c_dev, &zsrm_fops);
+
+	/* register the char device. */
+	ret = cdev_add(&c_dev, dev_id, 1);
+	if (ret < 0) {
+		printk(KERN_WARNING "ZSRMM: failed to register device.\n");
+		return ret;
+	}
+
+	sched_task = kthread_create((void *)scheduler_task, NULL, "ZSRMM scheduler thread");
+
+	p.sched_priority = 50;
+	sched_setscheduler(sched_task, SCHED_FIFO, &p);
+	kthread_bind(sched_task, 0);
+	printk(KERN_WARNING "ZSRMM: nanos per ten ticks: %lu \n",nanosPerTenTicks);
+	printk(KERN_WARNING "ZSRMM: ready!\n");
+
+	return 0;
+}
+
+static void __exit zsrm_exit(void)
+{
+	if (timer_started)
+		hrtimer_cancel(&ht);
+
+	delete_all_reserves();
+
+	delete_all_modal_reserves();
+
+	printk(KERN_INFO "ZSRMM: GOODBYE!\n");
+
+	/* delete the char device. */
+	cdev_del(&c_dev);
+	/* return back the device number. */
+	unregister_chrdev_region(dev_id, 1);
+	
+	kthread_stop(sched_task);
+}
+
+module_init(zsrm_init);
+module_exit(zsrm_exit);

@@ -1,0 +1,14 @@
+#include <zsrm.h>
+#include <stdio.h>
+
+int main(){
+  int sched;
+  if ((sched = zs_open_sched()) == -1){
+    printf("error opening scheduler\n");
+    return -1;
+  }
+
+  zs_print_stats(sched);
+
+  zs_close_sched(sched);
+}

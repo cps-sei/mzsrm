@@ -1,0 +1,3 @@
+set yrange [.5:4.5]
+set xtics scale 0.25, 0.125 rotate 0,2000,60000
+plot './ts-taskSuspension.txt' title "Suspension (1)" w i, './ts-taskPedestrian.txt' title "Pedestrian Detection (2)" w i , './ts-taskCruise.txt' title "Cruise Control (3)" w i , './ts-taskNew.txt' title "New (4)" w i

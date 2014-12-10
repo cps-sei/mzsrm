@@ -52,7 +52,7 @@ AS=as
 all:	libmzstask.a
 
 clean:
-	rm libmzstask.a modaltask.o modaltrigger.o
+	rm -f libmzstask.a modaltask.o modaltrigger.o
 
 busy.o:	busy.c
 	$(CC) -c busy.c -o busy.o -I.

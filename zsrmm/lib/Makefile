@@ -52,7 +52,7 @@ AS=as
 all:	libzs.a
 
 clean:
-	rm libzs.a libzs.o
+	rm -f libzs.a libzs.o
 
 libzs.o:	libzs.c ../zsrm.h
 	$(CC) -c libzs.c -o libzs.o

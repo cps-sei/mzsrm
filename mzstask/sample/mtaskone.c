@@ -121,9 +121,9 @@ int main(int argc, char * argv){
   cpuattr1.period.tv_nsec=200000000;//0;
   cpuattr1.reserve_type = CRITICALITY_RESERVE;
   cpuattr1.criticality = 7;
-  cpuattr1.priority = 10;
-  cpuattr1.zs_instant.tv_sec=5;
-  cpuattr1.zs_instant.tv_nsec=0;
+  cpuattr1.priority = 10; //-- priorities start from 1. higher number => higher priority.
+  cpuattr1.zs_instant.tv_sec=5; //-- ZS instance -- determined by ZS analysis
+  cpuattr1.zs_instant.tv_nsec=0; //-- ZS instance -- determined by ZS analysis
   cpuattr1.response_time_instant.tv_sec = 4;
   cpuattr1.response_time_instant.tv_nsec =0;
   cpuattr1.enforcement_mask=0;

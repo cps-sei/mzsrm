@@ -60,6 +60,17 @@ DM-0000891
 
 MODULE_LICENSE("GPL");
 
+#ifdef __ARMCORE__
+
+#define PMCNTNSET_C_BIT		0x80000000
+#define PMCR_D_BIT		0x00000008
+#define PMCR_C_BIT		0x00000004
+#define PMCR_P_BIT		0x00000002
+#define PMCR_E_BIT		0x00000001
+
+#endif
+
+
 // fixed for now -- This is for version 3.8
 #define LINUX_KERNEL_MINOR_VERSION 40
 
@@ -136,11 +147,35 @@ struct zs_modal_reserve modal_reserve_table[MAX_MODAL_RESERVES];
 
 struct zs_modal_transition_entry sys_mode_transition_table[MAX_SYS_MODE_TRANSITIONS][MAX_TRANSITIONS_IN_SYS_TRANSITIONS];
 
+#ifdef __ARMCORE__
+
+static inline void start_tsc(void){
+	unsigned long tmp;
+
+	tmp = PMCNTNSET_C_BIT;
+	asm volatile ("mcr p15, 0, %0, c9, c12, 1" : : "r" (tmp));
+
+
+	asm volatile ("mrc p15, 0, %0, c9, c12, 0" : "=r" (tmp));
+	tmp |= PMCR_C_BIT | PMCR_E_BIT;
+	asm volatile ("mcr p15, 0, %0, c9, c12, 0" : : "r" (tmp));
+}
+
+static inline unsigned long long rdtsc(void){
+	unsigned long result;
+	asm volatile ("mrc p15, 0, %0, c9, c13, 0" : "=r" (result));
+	return (unsigned long long) result;
+}
+
+#else
+
 static inline unsigned long long rdtsc(){
   unsigned int hi, lo;
-  __asm__ volatile ("rdtsc" : "=a" (lo), "=d" (hi));
+  __asm__ volatile ("rdtsc" : "=a" (lo), "=d" (hi) : :);
   return ((unsigned long long) hi << 32) | lo;
 }
+
+#endif
 
 unsigned long nanosPerTenTicks;
 
@@ -154,6 +189,9 @@ unsigned long long timestamp_ns(){
 
 void calibrate_ticks(){
   unsigned long long begin=0,end=0;
+#ifdef __ARMCORE__
+  unsigned long elapsed10s;
+#endif
   unsigned long waituntil;
   struct timespec begints, endts;
   unsigned long long diffts;
@@ -165,19 +203,32 @@ void calibrate_ticks(){
     ;
   end = rdtsc();
   getnstimeofday(&endts);
+  printk("zsrm.init: begin[%llu] end[%llu] begints[%lu] endts[%lu]\n",begin, end, begints.tv_nsec, endts.tv_nsec);
   diffts = ((endts.tv_sec * 1000000000)+ endts.tv_nsec) -
     ((begints.tv_sec * 1000000000) + begints.tv_nsec);
   end = end-begin;
+#ifdef __ARMCORE__
+  do_div(end,10);
+  elapsed10s = (unsigned long) end;
+  do_div(diffts,elapsed10s);
+  nanosPerTenTicks = diffts;
+#else
   end /=10;
-
   nanosPerTenTicks = diffts / end;
+#endif
+
 }
 
 
 // this will automatically truncate the result
 unsigned long long ticks2nanos(unsigned long long ticks){
   unsigned long long tmp =(unsigned long long) (ticks * nanosPerTenTicks);
-  return (tmp / 10);
+#ifdef __ARMCORE__
+  do_div(tmp,10);
+#else
+  tmp = tmp / 10;
+#endif
+  return tmp;
 }
 
 void test_ticks(){
@@ -199,8 +250,8 @@ void test_ticks(){
 
   end = ticks2nanos(end);
 
-  printk("ZSRMM: timeofday nanos : %llu\n",diffts);
-  printk("ZSRMM: ticks nanos: %llu\n",end);
+  printk("MZSRMM: timeofday nanos : %llu\n",diffts);
+  printk("MZSRMM: ticks nanos: %llu\n",end);
 }
 
 int print_stats(){
@@ -380,8 +431,14 @@ static void scheduler_task(void *a){
 				end_of_enforcement_ts_ns -= start_of_enforcement_ts_ns;
 				if (enforcement_latency_ns_avg == 0)
 				  enforcement_latency_ns_avg = end_of_enforcement_ts_ns;
-				else
+				else{
+#ifdef __ARMCORE__
+				  enforcement_latency_ns_avg = enforcement_latency_ns_avg + end_of_enforcement_ts_ns;
+				  do_div(enforcement_latency_ns_avg,2);
+#else
 				  enforcement_latency_ns_avg = (enforcement_latency_ns_avg + end_of_enforcement_ts_ns) / 2;
+#endif
+				}
 
 				if (end_of_enforcement_ts_ns > enforcement_latency_ns_worst)
 				  enforcement_latency_ns_worst = end_of_enforcement_ts_ns;
@@ -625,7 +682,12 @@ enum hrtimer_restart period_handler(struct hrtimer *timer){
 	if (!mode_change){
 	  no_mode_change_ts_ns = ticks2nanos(rdtsc());
 	  no_mode_change_ts_ns -= arrival_ts_ns;
+#ifdef __ARMCORE__
+	  arrival_no_mode_ns_avg = arrival_no_mode_ns_avg + no_mode_change_ts_ns;
+	  do_div(arrival_no_mode_ns_avg,2);
+#else
 	  arrival_no_mode_ns_avg = (arrival_no_mode_ns_avg + no_mode_change_ts_ns) /2;
+#endif
 	  if (arrival_no_mode_ns_worst < no_mode_change_ts_ns){
 	    arrival_no_mode_ns_worst = no_mode_change_ts_ns;
 	  }
@@ -634,7 +696,12 @@ enum hrtimer_restart period_handler(struct hrtimer *timer){
 	    // transition into suspension
 	    trans_into_susp_ts_ns = ticks2nanos(rdtsc());
 	    trans_into_susp_ts_ns -= arrival_ts_ns;
+#ifdef __ARMCORE__
+	    transition_into_susp_ns_avg = transition_into_susp_ns_avg + trans_into_susp_ts_ns;
+	    do_div(transition_into_susp_ns_avg,2);
+#else
 	    transition_into_susp_ns_avg = (transition_into_susp_ns_avg + trans_into_susp_ts_ns) / 2;
+#endif
 	    if (transition_into_susp_ns_worst < trans_into_susp_ts_ns){
 	      transition_into_susp_ns_worst = trans_into_susp_ts_ns;
 	    }
@@ -642,14 +709,24 @@ enum hrtimer_restart period_handler(struct hrtimer *timer){
 	    // transition into suspension
 	    trans_from_susp_ts_ns = ticks2nanos(rdtsc());
 	    trans_from_susp_ts_ns -= arrival_ts_ns;
+#ifdef __ARMCORE__
+	    transition_from_susp_ns_avg = transition_from_susp_ns_avg + trans_from_susp_ts_ns;
+	    do_div(transition_from_susp_ns_avg,2);
+#else
 	    transition_from_susp_ns_avg = (transition_from_susp_ns_avg + trans_from_susp_ts_ns) / 2;
+#endif
 	    if (transition_from_susp_ns_worst < trans_from_susp_ts_ns){
 	      transition_from_susp_ns_worst = trans_from_susp_ts_ns;
 	    }
 	  } else {
 	    mode_change_ts_ns= ticks2nanos(rdtsc());
 	    mode_change_ts_ns -= arrival_ts_ns;
+#ifdef __ARMCORE__
+	    arrival_mode_ns_avg = arrival_mode_ns_avg + mode_change_ts_ns;
+	    do_div(arrival_mode_ns_avg,2);
+#else
 	    arrival_mode_ns_avg = (arrival_mode_ns_avg + mode_change_ts_ns) / 2;
+#endif
 	    if (arrival_mode_ns_worst < mode_change_ts_ns){
 	      arrival_mode_ns_worst = mode_change_ts_ns;
 	    }
@@ -716,6 +793,9 @@ int mode_transition(int mrid, int tid){
   struct timespec now;
   unsigned long long now_ns;
   unsigned long long abs_zsi;
+#ifdef __ARMCORE__
+  u32 zsi_rem;
+#endif
   unsigned long long start_of_period_ns;
   struct timespec time_to_zsi;
   struct task_struct *task;
@@ -794,8 +874,13 @@ int mode_transition(int mrid, int tid){
 
       abs_zsi = abs_zsi - now_ns;
     
+#ifdef __ARMCORE__
+      time_to_zsi.tv_sec = div_u64_rem(abs_zsi, 1000000000, &zsi_rem);
+      time_to_zsi.tv_nsec=zsi_rem;
+#else
       time_to_zsi.tv_sec=abs_zsi / 1000000000ll;
       time_to_zsi.tv_nsec=abs_zsi % 1000000000ll;
+#endif
 
       printk("mode_transition: delayed transitional zsi to expire in %lu:%lu \n",time_to_zsi.tv_sec, time_to_zsi.tv_nsec);
 
@@ -1251,7 +1336,7 @@ static ssize_t zsrm_write
 
 	/* copy data to kernel buffer. */
 	if (copy_from_user(&call, buf, count)) {
-		printk(KERN_WARNING "ZSRMM: failed to copy data.\n");
+		printk(KERN_WARNING "MZSRMM: failed to copy data.\n");
 		return -EFAULT;
 	}
 	
@@ -1322,8 +1407,13 @@ static ssize_t zsrm_write
 	  sys_mode_transition(call.args.mode_switch_params.transition_id);
 	  mode_change_signals_sent_ts_ns=ticks2nanos(rdtsc());
 	  mode_change_signals_sent_ts_ns -= request_mode_change_ts_ns;
+#ifdef __ARMCORE__
+	  mode_change_latency_ns_avg = mode_change_latency_ns_avg + mode_change_signals_sent_ts_ns;
+	  do_div(mode_change_latency_ns_avg,2);
+#else
 	  mode_change_latency_ns_avg = (mode_change_latency_ns_avg + 
 					mode_change_signals_sent_ts_ns) / 2;
+#endif
 	  if (mode_change_signals_sent_ts_ns > mode_change_latency_ns_worst)
 	    mode_change_latency_ns_worst = mode_change_signals_sent_ts_ns;
 
@@ -1351,7 +1441,7 @@ static ssize_t zsrm_write
 	  break;
 	default: /* illegal api identifier. */
 		res = -1;
-		printk(KERN_WARNING "ZSRMM: illegal API identifier.\n");
+		printk(KERN_WARNING "MZSRMM: illegal API identifier.\n");
 		break;
 	}
 	spin_unlock_irqrestore(&zsrmlock,flags);
@@ -1397,8 +1487,12 @@ static int __init zsrm_init(void)
 	int ret;
 	struct sched_param p;
 
+#ifdef __ARMCORE__
+	start_tsc();
+#endif
+
 	init();
-	printk(KERN_INFO "ZSRMM: HELLO!\n");
+	printk(KERN_INFO "MZSRMM: HELLO!\n");
 
 	calibrate_ticks();
 
@@ -1407,7 +1501,7 @@ static int __init zsrm_init(void)
 	/* get the device number of a char device. */
 	ret = alloc_chrdev_region(&dev_id, 0, 1, "mzsrmm");
 	if (ret < 0) {
-		printk(KERN_WARNING "ZSRMM: failed to allocate device.\n");
+		printk(KERN_WARNING "MZSRMM: failed to allocate device.\n");
 		return ret;
 	}
 
@@ -1428,17 +1522,17 @@ static int __init zsrm_init(void)
 	/* register the char device. */
 	ret = cdev_add(&c_dev, dev_id, 1);
 	if (ret < 0) {
-		printk(KERN_WARNING "ZSRMM: failed to register device.\n");
+		printk(KERN_WARNING "MZSRMM: failed to register device.\n");
 		return ret;
 	}
 
-	sched_task = kthread_create((void *)scheduler_task, NULL, "ZSRMM scheduler thread");
+	sched_task = kthread_create((void *)scheduler_task, NULL, "MZSRMM scheduler thread");
 
 	p.sched_priority = 50;
 	sched_setscheduler(sched_task, SCHED_FIFO, &p);
 	kthread_bind(sched_task, 0);
-	printk(KERN_WARNING "ZSRMM: nanos per ten ticks: %lu \n",nanosPerTenTicks);
-	printk(KERN_WARNING "ZSRMM: ready!\n");
+	printk(KERN_WARNING "MZSRMM: nanos per ten ticks: %lu \n",nanosPerTenTicks);
+	printk(KERN_WARNING "MZSRMM: ready!\n");
 
 	return 0;
 }
@@ -1452,7 +1546,7 @@ static void __exit zsrm_exit(void)
 
 	delete_all_modal_reserves();
 
-	printk(KERN_INFO "ZSRMM: GOODBYE!\n");
+	printk(KERN_INFO "MZSRMM: GOODBYE!\n");
 
 	/* delete the char device. */
 	cdev_del(&c_dev);

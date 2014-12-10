@@ -39,22 +39,37 @@
 
 TARGET = mzsrmm
 OBJS = main.o
+UNAME_P := $(shell uname -p)
+
 #INCDIR = ../include/
+ifeq ($(UNAME_P),x86_64)
 INCDIR = /lib/modules/$(shell uname -r)/build/include
+else
+ifeq ($(UNAME_P),armv7l)
+INCDIR = ../../odroid-linux/include
+EXTRA_CFLAGS += -D__ARMCORE__
+else
+$(error platform (uname -p) must be x86_64 or armv7l)
+endif
+endif
 # If KERNELRELEASE is define, we have been invoked from the
 # kernel build system and can use its languages.
 ifneq ($(KERNELRELEASE),)
 	obj-m := $(TARGET).o
 	$(TARGET)-objs := $(OBJS)
-	EXTRA_CFLAGS := -I$(src)/$(INCDIR)
+	EXTRA_CFLAGS += -I$(src)/$(INCDIR)
 
 # Otherwise we were called directly from the command line;
 # invoke the kernel build system
 else
-	KERNELDIR ?= /lib/modules/$(shell uname -r)/build
 #	KERNELDIR ?= /home/dionisio/LinuxRK/drone-rk/kernel/linux-2.6.27-rk
+	ifeq ($(UNAME_P),x86_64)
+		KERNELDIR ?= /lib/modules/$(shell uname -r)/build
+	else
+		KERNELDIR ?= ../../odroid-linux
+	endif
 	PWD := $(shell pwd)
-	EXTRA_CFLAGS := -I$(PWD)/$(INCDIR) -O1
+	EXTRA_CFLAGS += -I$(PWD)/$(INCDIR) -O1
 
 all:
 	$(MAKE) -C $(KERNELDIR) M=$(PWD) modules

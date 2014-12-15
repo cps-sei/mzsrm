@@ -1429,8 +1429,12 @@ static ssize_t zsrm_write
 	case DELETE_RESERVE:
 		res = delete_reserve(call.args.reserveid);
 		break;
-	case WAIT_NEXT_PERIOD:
+	case MODAL_WAIT_NEXT_PERIOD:
 		res = modal_wait_for_next_period(call.args.reserveid);
+		need_reschedule = 1;
+		break;
+	case WAIT_NEXT_PERIOD:
+		res = wait_for_next_period(call.args.reserveid);
 		need_reschedule = 1;
 		break;
 	case GET_JIFFIES_MS:

@@ -126,12 +126,12 @@ void start_modal_task(int sched, struct modal_task *task, int argc, void *argv[]
       zs_attach_modal_reserve(sched, task->mrid,getpid());
     } else {
       zs_attach_modal_reserve(sched, task->mrid,getpid());
-      zs_wait_next_period(sched, modal_task_self->mrid);
+      zs_modal_wait_next_period(sched, modal_task_self->mrid);
     }
     while(!modal_task_self->exit_requested){
       if (modal_task_self->current_mode != DISABLED_MODE)
 	modal_task_self->modes[modal_task_self->current_mode].mode_job_function();
-      if (zs_wait_next_period(sched, modal_task_self->mrid)<0){
+      if (zs_modal_wait_next_period(sched, modal_task_self->mrid)<0){
 	printf("wait next period returned negative\n");
 	if (errno == EINTR){
 	  printf("signal interruption!!\n");

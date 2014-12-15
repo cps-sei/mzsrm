@@ -54,7 +54,8 @@ DM-0000891
 #define ATTACH_RESERVE 2
 #define DETACH_RESERVE 3
 #define DELETE_RESERVE 4
-#define WAIT_NEXT_PERIOD 5
+#define MODAL_WAIT_NEXT_PERIOD 5
+#define WAIT_NEXT_PERIOD 20
 #define BUDGET_OVERRUN 6
 #define GET_JIFFIES_MS 7
 
@@ -237,6 +238,7 @@ int zs_mode_switch(int fid, int sys_transition_id);
 int zs_attach_reserve(int fd, int rid, int pid);
 int zs_detach_reserve(int fd, int rid);
 int zs_delete_reserve(int fd, int rid);
+int zs_modal_wait_next_period(int fd, int mrid);
 int zs_wait_next_period(int fd, int rid);
 int zs_get_jiffies_ms(int fd);
 int zs_add_reserve_to_mode(int fid, int mrid, int mode, int rid);

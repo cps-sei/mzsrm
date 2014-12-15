@@ -127,6 +127,17 @@ int zs_delete_reserve(int fd, int rid){
 	return ret;
 }
 
+int zs_modal_wait_next_period(int fd, int mrid){
+	struct api_call call;
+	int ret;
+
+	call.api_id = MODAL_WAIT_NEXT_PERIOD;
+	call.args.reserveid = mrid;
+	while ((ret = write(fd, &call, sizeof(call))) == -1 && errno == EINTR)
+	  ;
+	return ret;
+}
+
 int zs_wait_next_period(int fd, int rid){
 	struct api_call call;
 	int ret;

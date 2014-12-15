@@ -917,9 +917,11 @@ public class ZSRMScheduler {
 		
 		schedHostiles.compressSchedule();		
 
+                /*
 		for (Task task:schedHostiles.tasksByPriority){
 			schedHostiles.svgPlotCriticalInstant(task, "c:/temp/critInstant"+task.name+"Hostiles.svg");
 		}
+                */
 		
 		System.out.println("Hostile Scheduled Tasks:");
 		for (Task t:schedHostiles.tasksByPriority){
@@ -928,9 +930,11 @@ public class ZSRMScheduler {
 
 		schedFriendlies.compressSchedule();		
 
+                /*
 		for (Task task:schedFriendlies.tasksByPriority){
 			schedHostiles.svgPlotCriticalInstant(task, "c:/temp/critInstant"+task.name+"Friendlies.svg");
 		}
+                */
 		
 		System.out.println("Friendlies Scheduled Tasks:");
 		for (Task t:schedFriendlies.tasksByPriority){

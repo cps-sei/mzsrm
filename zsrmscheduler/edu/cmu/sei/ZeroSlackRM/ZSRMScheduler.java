@@ -957,4 +957,40 @@ public class ZSRMScheduler {
     //			System.out.println("Slack[ time: "+r.time+", slack: "+r.slack+"]");
     //		}
   }
+
+  //-- the argument is a comma separated list X1,X2, ...,Xn where each
+  //-- Xi is a task desciptor of the form A:B:C:D:E:F where
+  //-- A is the task name
+  //-- B is the period
+  //-- C is the overloaded WCET
+  //-- D is the normal WCET
+  //-- E is the criticality (lower number means higher criticality)
+  //-- F is the priority (lower number means higher priority)
+  //-- the return value is a comma separated list of zero slack instants
+  public static String computeZSInstants(String arg)
+  {
+    //System.out.println(arg);
+
+    //-- create tasks
+    ZSRMScheduler sched = new ZSRMScheduler();
+    for(String x : arg.split(",")) {
+      String [] y = x.split(":");
+      sched.addTask(new Task(y[0], Long.parseLong(y[1]), Long.parseLong(y[2]),
+                             Long.parseLong(y[3]), Long.parseLong(y[4]),
+                             Long.parseLong(y[5])));
+    }
+
+    //-- run schedulability analysis
+    sched.compressSchedule();		
+
+    //-- construct and return result
+    String res = null;
+    for (Task t : sched.tasksByPriority) {
+      Long zsi = new Long(t.ZeroSlackInstant);
+      if(res == null) res = t.name + ":" + zsi.toString();
+      else res = res + "," + t.name + ":" + zsi.toString();
+    }
+
+    return res;
+  }
 }

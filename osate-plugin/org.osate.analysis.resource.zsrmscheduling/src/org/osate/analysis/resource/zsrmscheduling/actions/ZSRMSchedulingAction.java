@@ -5,6 +5,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.TreeSet;
 
 import org.eclipse.core.runtime.IProgressMonitor;
@@ -95,34 +96,90 @@ public class ZSRMSchedulingAction extends AbstractInstanceOrDeclarativeModelRead
 		};
 		addTasks.processPreOrderComponentInstance(root, ComponentCategory.THREAD);
 
-		final ZSRMScheduler sched = new ZSRMScheduler();
-
-		TreeSet<ZSRMTask> prioritylist = new TreeSet<ZSRMTask>(new IncreasingPeriodComparator());
-		prioritylist.addAll(tasks);
-
-		int priority = 1;
-
-		for (ZSRMTask t : prioritylist) {
-			t.setPriority(priority++);
-		}
-
-		for (ZSRMTask task : tasks) {
-			Task t = new Task("", task.getPeriodNanos(), task.getOverloadedWCETNanos(), task.getNominalWCETNanos(),
-					task.getCriticality(), task.getPriority());
-			sched.addTask(t);
-			task2zsrmtask.put(t, task);
-			System.out.println("Task: period[" + task.getPeriodNanos() + "] Co[" + task.getOverloadedWCETNanos()
-					+ "] C[" + task.getNominalWCETNanos() + "] criticality[" + task.getCriticality() + "] priority["
-					+ task.getPriority() + "]");
-		}
-
-		sched.compressSchedule();
-
 		boolean schedulable = true;
-		for (Task t : sched.getTasksByPriority()) {
-			schedulable = schedulable && (t.ZeroSlackInstant >= 0);
-		}
 
+		for (Map.Entry<ZSRMProcessor, ArrayList<ZSRMTask>> entry : proc2Taskset.entrySet()) {
+
+			ArrayList<ZSRMTask> procTasks = entry.getValue();
+
+			final ZSRMScheduler sched = new ZSRMScheduler();
+
+			TreeSet<ZSRMTask> prioritylist = new TreeSet<ZSRMTask>(new IncreasingPeriodComparator());
+			prioritylist.addAll(procTasks);
+
+			int priority = 1;
+
+			for (ZSRMTask t : prioritylist) {
+				t.setPriority(priority++);
+			}
+
+			for (ZSRMTask task : procTasks) {
+				Task t = new Task("", task.getPeriodNanos(), task.getOverloadedWCETNanos(), task.getNominalWCETNanos(),
+						task.getCriticality(), task.getPriority());
+				sched.addTask(t);
+				task2zsrmtask.put(t, task);
+				System.out.println("Task: period[" + task.getPeriodNanos() + "] Co[" + task.getOverloadedWCETNanos()
+						+ "] C[" + task.getNominalWCETNanos() + "] criticality[" + task.getCriticality()
+						+ "] priority[" + task.getPriority() + "]");
+			}
+
+			sched.compressSchedule();
+
+			for (Task t : sched.getTasksByPriority()) {
+				schedulable = schedulable && (t.ZeroSlackInstant >= 0);
+			}
+
+			if (schedulable) {
+				final TransactionalEditingDomain domain = TransactionalEditingDomain.Registry.INSTANCE
+						.getEditingDomain("org.osate.aadl2.ModelEditingDomain");
+				// We execute this command on the command stack because otherwise, we will not
+				// have write permissions on the editing domain.
+				Command cmd = new RecordingCommand(domain) {
+
+					@Override
+					protected void doExecute() {
+						Property propZS = GetProperties.lookupPropertyDefinition(root.getComponentImplementation(),
+								"Zero_Slack_Scheduling", "Zero_Slack_Instant");
+
+						for (Task t : sched.getTasksByPriority()) {
+							PropertyAssociation paZS = root.getComponentImplementation()
+									.createOwnedPropertyAssociation();
+							paZS.setProperty(propZS);
+							ModalPropertyValue pvZS = paZS.createOwnedValue();
+
+							IntegerLiteral intLiteralZS = (IntegerLiteral) pvZS.createOwnedValue(Aadl2Package.eINSTANCE
+									.getIntegerLiteral());
+							intLiteralZS.setValue(t.ZeroSlackInstant);
+							intLiteralZS.setUnit(PropertiesLinkingService.findUnitLiteral(propZS, "ns"));
+							ArrayDeque<Subcomponent> containmentPath = new ArrayDeque<Subcomponent>();
+							ZSRMTask zsrmtask = task2zsrmtask.get(t);
+							for (ComponentInstance parent = zsrmtask.instance; parent != root; parent = parent
+									.getContainingComponentInstance()) {
+								containmentPath.push(parent.getSubcomponent());
+							}
+							if (!containmentPath.isEmpty()) {
+								NamedElement ne = containmentPath.pop();
+								ContainmentPathElement peZS = paZS.createAppliesTo().createPath();
+								peZS.setNamedElement(ne);
+								while (!containmentPath.isEmpty()) {
+									ne = containmentPath.pop();
+									peZS = peZS.createPath();
+									peZS.setNamedElement(ne);
+								}
+							}
+						}
+
+					}
+				};
+
+				try {
+					((TransactionalCommandStack) domain.getCommandStack()).execute(cmd, null);
+				} catch (InterruptedException | RollbackException e) {
+					// TODO Auto-generated catch block
+					e.printStackTrace();
+				}
+			}
+		}
 		final boolean isSchedulable = schedulable;
 
 		getShell().getDisplay().syncExec(new Runnable() {
@@ -134,53 +191,6 @@ public class ZSRMSchedulingAction extends AbstractInstanceOrDeclarativeModelRead
 		});
 
 		if (schedulable) {
-			final TransactionalEditingDomain domain = TransactionalEditingDomain.Registry.INSTANCE
-					.getEditingDomain("org.osate.aadl2.ModelEditingDomain");
-			// We execute this command on the command stack because otherwise, we will not
-			// have write permissions on the editing domain.
-			Command cmd = new RecordingCommand(domain) {
-
-				@Override
-				protected void doExecute() {
-					Property propZS = GetProperties.lookupPropertyDefinition(root.getComponentImplementation(),
-							"Zero_Slack_Scheduling", "Zero_Slack_Instant");
-
-					for (Task t : sched.getTasksByPriority()) {
-						PropertyAssociation paZS = root.getComponentImplementation().createOwnedPropertyAssociation();
-						paZS.setProperty(propZS);
-						ModalPropertyValue pvZS = paZS.createOwnedValue();
-
-						IntegerLiteral intLiteralZS = (IntegerLiteral) pvZS.createOwnedValue(Aadl2Package.eINSTANCE
-								.getIntegerLiteral());
-						intLiteralZS.setValue(t.ZeroSlackInstant);
-						intLiteralZS.setUnit(PropertiesLinkingService.findUnitLiteral(propZS, "ns"));
-						ArrayDeque<Subcomponent> containmentPath = new ArrayDeque<Subcomponent>();
-						ZSRMTask zsrmtask = task2zsrmtask.get(t);
-						for (ComponentInstance parent = zsrmtask.instance; parent != root; parent = parent
-								.getContainingComponentInstance()) {
-							containmentPath.push(parent.getSubcomponent());
-						}
-						if (!containmentPath.isEmpty()) {
-							NamedElement ne = containmentPath.pop();
-							ContainmentPathElement peZS = paZS.createAppliesTo().createPath();
-							peZS.setNamedElement(ne);
-							while (!containmentPath.isEmpty()) {
-								ne = containmentPath.pop();
-								peZS = peZS.createPath();
-								peZS.setNamedElement(ne);
-							}
-						}
-					}
-
-				}
-			};
-
-			try {
-				((TransactionalCommandStack) domain.getCommandStack()).execute(cmd, null);
-			} catch (InterruptedException | RollbackException e) {
-				// TODO Auto-generated catch block
-				e.printStackTrace();
-			}
 			try {
 				root.getComponentImplementation().eResource().save(null);
 			} catch (IOException e) {
@@ -188,7 +198,6 @@ public class ZSRMSchedulingAction extends AbstractInstanceOrDeclarativeModelRead
 				e.printStackTrace();
 			}
 		}
-
 	}
 
 	protected String getActionName() {

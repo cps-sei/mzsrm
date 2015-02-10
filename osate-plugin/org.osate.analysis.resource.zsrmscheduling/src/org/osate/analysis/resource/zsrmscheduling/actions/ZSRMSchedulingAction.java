@@ -60,6 +60,7 @@ public class ZSRMSchedulingAction extends AbstractInstanceOrDeclarativeModelRead
 		instance2processor.clear();
 		tasks.clear();
 		task2zsrmtask.clear();
+		proc2Taskset.clear();
 
 		// get processors
 		final ForAllElement addProcessors = new ForAllElement(errManager) {

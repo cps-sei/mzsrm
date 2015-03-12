@@ -26,6 +26,14 @@ public class ZSRMTask {
 		criticality = (int) PropertyUtils.getIntegerValue(instance, criticalityProperty);
 	}
 
+	public void fillZeroSlackInstant() {
+		Property zeroSlackInstantProperty = GetProperties.lookupPropertyDefinition(instance, "Zero_Slack_Scheduling",
+				"Zero_Slack_Instant");
+		UnitLiteral nanoSecond = GetProperties.findUnitLiteral(zeroSlackInstantProperty, AadlProject.NS_LITERAL);
+		zeroSlackInstantNanos = (long) PropertyUtils.getScaledNumberValue(instance, zeroSlackInstantProperty,
+				nanoSecond);
+	}
+
 	static long nextId = 0;
 
 	long id = nextId++;
@@ -36,6 +44,10 @@ public class ZSRMTask {
 
 	ComponentInstance instance;
 
+	public ComponentInstance getComponentInstance() {
+		return instance;
+	}
+
 	public static ZSRMTask createInstance(ComponentInstance ci) {
 		ZSRMTask task = new ZSRMTask();
 		task.instance = ci;
@@ -43,6 +55,16 @@ public class ZSRMTask {
 		task.fillExecutionTime();
 		task.fillCriticality();
 		return task;
+	}
+
+	long zeroSlackInstantNanos;
+
+	public long getZeroSlackInstantNanos() {
+		return zeroSlackInstantNanos;
+	}
+
+	public void setZeroSlackInstantNanos(long z) {
+		zeroSlackInstantNanos = z;
 	}
 
 	long periodNanos;

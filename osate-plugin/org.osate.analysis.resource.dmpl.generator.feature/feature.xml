@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <feature
       id="org.osate.analysis.resource.dmpl.generator.feature"
-      label="Feature"
+      label="DMPL Generator"
       version="1.0.0.qualifier"
       provider-name="CMU SEI">
 

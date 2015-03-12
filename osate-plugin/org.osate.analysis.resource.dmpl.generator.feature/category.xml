@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<site>
+   <feature url="features/org.osate.analysis.resource.dmpl.generator.feature_1.0.0.qualifier.jar" id="org.osate.analysis.resource.dmpl.generator.feature" version="1.0.0.qualifier">
+      <category name="edu.cmu.sei.osate.analysis.resource.dmpl.generator"/>
+   </feature>
+   <category-def name="edu.cmu.sei.osate.analysis.resource.dmpl.generator" label="DMPL Generator"/>
+</site>

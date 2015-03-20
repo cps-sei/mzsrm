@@ -9,7 +9,7 @@
             visible="true">
          <menu
                id="menu.osate"
-               label="%menu.osate.label"
+               label="OSATE"
                path="project">
             <groupMarker name="file.grp"/>
             <separator name="instance.grp"/>
@@ -18,7 +18,7 @@
  
         <menu
                id="menu.analyses"
-               label="%menu.analyses.label"
+               label="Analyses"
                path="menu.osate">
             <groupMarker name="top.grp"/>
             <groupMarker name="bottom.grp"/>

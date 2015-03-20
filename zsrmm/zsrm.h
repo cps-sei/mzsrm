@@ -55,7 +55,6 @@ DM-0000891
 #define DETACH_RESERVE 3
 #define DELETE_RESERVE 4
 #define MODAL_WAIT_NEXT_PERIOD 5
-#define WAIT_NEXT_PERIOD 20
 #define BUDGET_OVERRUN 6
 #define GET_JIFFIES_MS 7
 
@@ -71,6 +70,11 @@ DM-0000891
 #define DELETE_SYS_TRANSITION 17
 #define SET_INITIAL_MODE_MODAL_RESERVE 18
 #define PRINT_STATS 19
+
+#define WAIT_NEXT_PERIOD 20
+
+#define RAISE_PRIORITY_CRITICALITY 21
+#define RESTORE_BASE_PRIORITY_CRITICALITY 22
 
 #define TIMER_ZS  1
 #define TIMER_ENF 2
@@ -157,6 +161,10 @@ struct zs_reserve {
 	int just_returned_from_degradation;
 	struct zs_reserve_params params;
 	struct timespec start_of_period;
+        // Vars for PCCP -- not compatible with
+        // modal reserves!!
+        int base_priority;
+        int base_criticality;
 };
 
 struct zs_modal_reserve{
@@ -207,6 +215,11 @@ struct mode_switch_api{
   int transition_id;
 };
 
+struct raise_priority_criticality_api{
+  int priority_ceiling;
+  int criticality_ceiling;
+};
+
 struct api_call{
   int api_id;
   union {
@@ -219,6 +232,7 @@ struct api_call{
     struct mode_switch_api mode_switch_params;
     struct add_transition_to_sys_transition_api trans_to_sys_trans_params;
     struct set_initial_mode_modal_reserve_api set_initial_mode_params;
+    struct raise_priority_criticality_api raise_priority_criticality_params;
   }args;
 };
 
@@ -244,4 +258,6 @@ int zs_get_jiffies_ms(int fd);
 int zs_add_reserve_to_mode(int fid, int mrid, int mode, int rid);
 int zs_print_stats(int fd);
 
+int zs_raise_priority_criticality(int fid, int priority_ceiling,int criticality_ceiling);
+int zs_restore_base_priority_criticality(int fid);
 #endif

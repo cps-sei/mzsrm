@@ -41,6 +41,7 @@ DM-0000891
 
 #include <stdio.h>
 #include "../zsrm.h"
+#include "zsmutex.h"
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -273,4 +274,51 @@ int zs_mode_switch(int fid, int sys_transition_id){
 
   ret = write(fid, &call, sizeof(call));
   return ret;
+}
+
+int zs_raise_priority_criticality(int fid, int priority_ceiling,int criticality_ceiling){
+  struct api_call call;
+  int ret;
+  
+  call.api_id = RAISE_PRIORITY_CRITICALITY;
+  call.args.raise_priority_criticality_params.priority_ceiling = priority_ceiling;
+  call.args.raise_priority_criticality_params.criticality_ceiling = criticality_ceiling;
+
+  ret = write(fid,&call, sizeof(call));
+  return ret;
+}
+
+int zs_restore_base_priority_criticality(int fid){
+  struct api_call call;
+  int ret;
+
+  call.api_id = RESTORE_BASE_PRIORITY_CRITICALITY;
+
+  ret = write(fid,&call, sizeof(call));
+  return ret;
+}
+
+
+int zs_pccp_mutex_init(zs_pccp_mutex_t *mutex, int priority_ceiling, int criticality_ceiling, pthread_mutexattr_t *attr){
+
+  mutex->criticality_ceiling = criticality_ceiling;
+  mutex->priority_ceiling = priority_ceiling;
+  return pthread_mutex_init(&(mutex->pmutex),attr);
+}
+
+int zs_pccp_mutex_lock(int sched_id, zs_pccp_mutex_t *mutex){
+  zs_raise_priority_criticality(sched_id, mutex->priority_ceiling,mutex->criticality_ceiling);
+  return pthread_mutex_lock(&(mutex->pmutex));
+}
+
+int zs_pccp_mutex_unlock(int sched_id, zs_pccp_mutex_t *mutex){
+  int ret;
+
+  ret = pthread_mutex_unlock(&(mutex->pmutex));
+  zs_restore_base_priority_criticality(sched_id);
+  return ret;
+}
+
+int zs_pccp_mutex_destroy(zs_pccp_mutex_t *mutex){
+  return pthread_mutex_destroy(&(mutex->pmutex));
 }

@@ -37,6 +37,6 @@
 #
 #DM-0000891
 
-sudo insmod mzsrmm.ko
-sudo mknod /dev/mzsrmm c `grep mzsrmm /proc/devices | cut -f1 -d" "` 0
-sudo chmod 0666 /dev/mzsrmm
+sudo insmod zsrmm.ko
+#sudo mknod /dev/mzsrmm c `grep mzsrmm /proc/devices | cut -f1 -d" "` 0
+sudo chmod 0666 /dev/zsrmm0

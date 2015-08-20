@@ -54,7 +54,7 @@ DM-0000891
 
 int zs_open_sched(){
 	int fd;
-	fd = open("/dev/mzsrmm", O_RDWR);
+	fd = open("/dev/zsrmm0", O_RDWR);
 	if (fd < 0) {
 		printf("Error: failed to access the module!\n");
 		return -1;

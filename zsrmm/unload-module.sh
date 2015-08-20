@@ -1,3 +1,3 @@
 #!/bin/bash
-rmmod mzsrmm
-rm /dev/mzsrmm
+rmmod zsrmm
+#rm /dev/mzsrmm

@@ -46,8 +46,12 @@ DM-0000891
 #include <linux/kernel.h>
 #include <linux/list.h>
 #include <linux/cdev.h>
+#include <linux/device.h>
+#include <linux/version.h>
 #include <linux/fs.h>
 #include <linux/module.h>
+#include <linux/moduleparam.h>
+#include <linux/init.h>
 #include <linux/nsproxy.h>
 #include <linux/sched.h>
 #include <linux/hrtimer.h>
@@ -55,10 +59,18 @@ DM-0000891
 #include <linux/kthread.h>
 #include <linux/spinlock.h>
 #include <asm/siginfo.h>
+#include <linux/semaphore.h>
 #include <linux/signal.h>
+//#include "accounting.h"
 #include "zsrm.h"
 
+MODULE_AUTHOR("Dionisio de Niz");
 MODULE_LICENSE("GPL");
+
+// some configuration options -- transform into CONFIG_*
+#define __ZSRM_TSC_CLOCK__
+
+#define DEVICE_NAME "zsrmm"
 
 #ifdef __ARMCORE__
 
@@ -71,53 +83,21 @@ MODULE_LICENSE("GPL");
 #endif
 
 
-// fixed for now -- This is for version 3.8
-#define LINUX_KERNEL_MINOR_VERSION 40
 
 /* device number. */
 static dev_t dev_id;
+static unsigned int dev_major;
+static struct class *dev_class = NULL;
+
 /* char device structure. */
 static struct cdev c_dev;
 
 static struct hrtimer ht;
 int timer_started = 0;
-/* Deprecated
-spinlock_t zsrmlock = SPIN_LOCK_UNLOCKED;;
-spinlock_t reschedule_lock = SPIN_LOCK_UNLOCKED;
-*/
 
 static DEFINE_SPINLOCK(zsrmlock);
 static DEFINE_SPINLOCK(reschedule_lock);
-
-enum hrtimer_restart zs_instant_handler(struct hrtimer *timer);
-enum hrtimer_restart period_handler(struct hrtimer *timer);
-int attach_reserve(int rid, int pid);
-int find_empty_entry(void);
-int wait_for_next_period(int rid);
-int modal_wait_for_next_period(int mrid);
-int delete_reserve(int rid);
-int detach_reserve(int rid);
-void init(void);
-int create_reserve(int rid);
-void period_degradation(int rid);
-void try_resume_normal_period(int rid);
-int init_sys_mode_transitions(void);
-int create_sys_mode_transition(void);
-int delete_sys_mode_transition(int stid);
-int add_transition_to_sys_transition(int stid, int mrid, int mtid);
-int sys_mode_transition(int stid);
-int mode_transition(int mrid, int tid);
-int create_modal_reserve(int);
-int delete_modal_reserve(int mrid);
-int detach_modal_reserve(int mrid);
-int attach_reserve_transitional(int rid, int pid, struct timespec *trans_zs_instant);
-int print_stats(void);
-void test_ticks(void);
-unsigned long long timestamp_ns(void);
-void calibrate_ticks(void);
-static inline unsigned long long rdtsc(void);
-int raise_priority_criticality(int rid, int priority_ceiling, int criticality_ceiling);
-int restore_base_priority_criticality(int rid);
+struct semaphore zsrmsem;
 
 /*******************
  * Variable to track if system has modal reserves
@@ -133,6 +113,9 @@ int restore_base_priority_criticality(int rid);
  *******************/
 
 int modal_scheduling  = 0; // NO by default
+
+struct zs_reserve *active_reserve_ptr = NULL;
+struct zs_reserve *head_paused_reserve_ptr = NULL;
 
 //timestamps
 unsigned long long arrival_ts_ns=0LL;
@@ -161,8 +144,13 @@ unsigned long long enforcement_latency_ns_worst=0LL;
 
 struct zs_reserve reserve_table[MAX_RESERVES];
 struct zs_modal_reserve modal_reserve_table[MAX_MODAL_RESERVES];
-
 struct zs_modal_transition_entry sys_mode_transition_table[MAX_SYS_MODE_TRANSITIONS][MAX_TRANSITIONS_IN_SYS_TRANSITIONS];
+
+#ifdef __ZSRM_TSC_CLOCK__
+#define now2timespec(ts) nanos2timespec(ticks2nanos(rdtsc()),ts)
+#else
+#define now2timespec(ts) jiffies_to_timespec(jiffies,ts)
+#endif
 
 #ifdef __ARMCORE__
 
@@ -224,6 +212,8 @@ void calibrate_ticks(){
   diffts = ((endts.tv_sec * 1000000000)+ endts.tv_nsec) -
     ((begints.tv_sec * 1000000000) + begints.tv_nsec);
   end = end-begin;
+  printk("zsrm.init: elapse ns (%llu)\n",diffts);
+  printk("zsrm.init: elapse tk (%llu)\n",end);
 #ifdef __ARMCORE__
   do_div(end,10);
   elapsed10s = (unsigned long) end;
@@ -236,7 +226,6 @@ void calibrate_ticks(){
 
 }
 
-
 // this will automatically truncate the result
 unsigned long long ticks2nanos(unsigned long long ticks){
   unsigned long long tmp =(unsigned long long) (ticks * nanosPerTenTicks);
@@ -247,6 +236,21 @@ unsigned long long ticks2nanos(unsigned long long ticks){
 #endif
   return tmp;
 }
+
+void nanos2timespec(unsigned long long ns, struct timespec *ts){
+#ifdef __ARMCORE__
+  unsigned long long tmp = ns;
+  do_div(tmp,1000000000);
+  ts->tv_sec = tmp;
+  tmp = ns;
+  do_mod(tmp,1000000000);
+  ts->tv_nsec = tmp;
+#else
+  ts->tv_sec = ns / 1000000000L;
+  ts->tv_nsec = ns % 1000000000L;
+#endif
+}
+
 
 void test_ticks(){
   unsigned long long begin=0,end=0;
@@ -267,8 +271,8 @@ void test_ticks(){
 
   end = ticks2nanos(end);
 
-  printk("MZSRMM: timeofday nanos : %llu\n",diffts);
-  printk("MZSRMM: ticks nanos: %llu\n",end);
+  printk("MZSRMM: tfd   nanos : %llu\n",diffts);
+  printk("MZSRMM: ticks nanos : %llu\n",end);
 }
 
 int print_stats(){
@@ -286,6 +290,184 @@ int print_stats(){
   printk("avg enforcement latency: %llu (ns) \n",enforcement_latency_ns_avg);
   printk("worst enforcement latency: %llu (ns) \n",enforcement_latency_ns_worst);
   return 0;
+}
+
+void add_paused_reserve(struct zs_reserve *rsv){
+  struct zs_reserve *tmp;
+  if (head_paused_reserve_ptr == NULL){
+    rsv->next_paused_lower_criticality = NULL;
+    head_paused_reserve_ptr = rsv;
+  } else if (head_paused_reserve_ptr->params.overloaded_marginal_utility < rsv->params.overloaded_marginal_utility) {
+    rsv->next_paused_lower_criticality = head_paused_reserve_ptr;
+    head_paused_reserve_ptr = rsv;
+  } else {
+    tmp = head_paused_reserve_ptr;
+    while (tmp->next_paused_lower_criticality != NULL && 
+	   tmp->next_paused_lower_criticality->params.overloaded_marginal_utility > rsv->params.overloaded_marginal_utility){
+      tmp = tmp->next_paused_lower_criticality;
+    }
+    rsv->next_paused_lower_criticality = tmp->next_paused_lower_criticality;
+    tmp->next_paused_lower_criticality = rsv;
+  }
+}
+
+void del_paused_reserve(struct zs_reserve *rsv){
+  struct zs_reserve *tmp;
+
+  if (head_paused_reserve_ptr == rsv){
+    head_paused_reserve_ptr = head_paused_reserve_ptr->next_paused_lower_criticality;
+    rsv->next_paused_lower_criticality = NULL;
+  } else {
+    tmp = head_paused_reserve_ptr;
+    while(tmp != NULL && 
+	  tmp->next_paused_lower_criticality != rsv){
+      tmp = tmp->next_paused_lower_criticality;
+    }
+    tmp =rsv->next_paused_lower_criticality;
+    rsv->next_paused_lower_criticality = NULL;
+  }
+}
+
+void kill_paused_reserves(int criticality){
+  struct zs_reserve *tmp = head_paused_reserve_ptr;
+  struct zs_reserve *prev = NULL;
+
+  while(tmp != NULL && tmp->params.overloaded_marginal_utility >= criticality){
+    tmp = tmp->next_paused_lower_criticality;
+  }
+
+  while (tmp != NULL){
+    kill_reserve(tmp);
+    prev = tmp;
+    if (tmp == head_paused_reserve_ptr)
+      head_paused_reserve_ptr = tmp->next_paused_lower_criticality;
+    tmp=tmp->next_paused_lower_criticality;
+    prev->next_paused_lower_criticality = NULL;
+  }
+}
+
+void resume_paused_reserves(int criticality){
+  struct zs_reserve *tmp = head_paused_reserve_ptr;
+  struct zs_reserve *prev = NULL;
+
+  while(tmp != NULL && tmp->params.overloaded_marginal_utility >= criticality){
+    resume_reserve(tmp);
+    prev = tmp;
+    if (head_paused_reserve_ptr == tmp)
+      head_paused_reserve_ptr = tmp->next_paused_lower_criticality;
+    tmp = tmp->next_paused_lower_criticality;
+    prev->next_paused_lower_criticality = NULL;
+  }
+}
+
+// kill always happens on a paused reserve once the overloading
+// job finishes, so the next job arrival revives the reserve
+void kill_reserve(struct zs_reserve *rsv){
+  struct task_struct *task;
+  struct sched_param p;
+  task = gettask(rsv->pid);
+  if (task != NULL){
+    // restore priority
+    p.sched_priority = rsv->effective_priority;
+    sched_setscheduler(task, SCHED_FIFO, &p);
+    printk("zsrmm.kill_reserve: setting rid(%d) TASK_INTERRUPTIBLE\n",rsv->rid);
+    set_task_state(task, TASK_INTERRUPTIBLE);
+    set_tsk_need_resched(task);
+  }
+
+  // jumps directly to wait for next period
+  rsv->execution_status = EXEC_WAIT_NEXT_PERIOD;
+  rsv->critical_utility_mode_enforced=0;
+  /* --- cancel all timers --- */
+  if (rsv->params.enforcement_mask & ZS_RESPONSE_TIME_ENFORCEMENT_MASK){
+    hrtimer_cancel(&(rsv->response_time_timer));
+  }
+  hrtimer_cancel(&(rsv->zs_timer));
+}
+
+void pause_reserve(struct zs_reserve *rsv){
+  add_paused_reserve(rsv);
+  if (rsv->execution_status == EXEC_RUNNING){
+    // stop the task
+    rsv->critical_utility_mode_enforced = 1;
+    rsv->just_returned_from_degradation=0;
+    rsv->request_stop = 1;
+    push_to_reschedule(rsv->rid);
+  } else {
+    printk("zsrmm.pause_reserve: reserve != EXEC_RUNNING status(%X)\n",rsv->execution_status);
+  }
+  rsv->execution_status |= EXEC_ENFORCED_PAUSED;
+}
+
+void resume_reserve(struct zs_reserve *rsv){
+  struct task_struct *task;
+  // double check that it was paused
+  //if (rsv->execution_status & EXEC_ENFORCED_PAUSED){
+    if (rsv->execution_status & EXEC_RUNNING){
+      rsv->execution_status = EXEC_RUNNING;
+      task = gettask(rsv->pid);
+      if (task == NULL && (task->state & TASK_INTERRUPTIBLE ||
+			   task->state & TASK_UNINTERRUPTIBLE)){
+	wake_up_process(task);
+      }
+      // reschedule again
+      // rsv->effective_priority = rsv->params.priority;
+      push_to_reschedule(rsv->rid);
+      rsv->current_degraded_mode = -1;
+      rsv->just_returned_from_degradation=1;
+    } else if (rsv->execution_status & EXEC_WAIT_NEXT_PERIOD){
+      rsv->execution_status = EXEC_WAIT_NEXT_PERIOD;
+    } else {
+      printk("zsrmm.resume_reserve: rid(%d) not running or waiting status(%X)\n",rsv->rid, rsv->execution_status);
+    }
+    //} else {
+    //printk("zsrm. erroneous execution_status found while resuming running reserve");
+    //}
+}
+
+void start_accounting(struct zs_reserve *rsv){
+  if (active_reserve_ptr == rsv){
+    //printk("zsrm.start_acct: ptr(%d) == rsv(%d)\n",active_reserve_ptr->rid,rsv->rid);
+    // only start accounting
+    rsv->job_resumed_timestamp_nanos = ticks2nanos(rdtsc());
+  } else if (active_reserve_ptr == NULL){
+    //printk("zsrm.start_acct: ptr == NULL adding rsv(%d)\n",rsv->rid);
+    active_reserve_ptr = rsv;
+    rsv->next_lower_priority = NULL;
+    rsv->job_resumed_timestamp_nanos = ticks2nanos(rdtsc());
+  } else if (active_reserve_ptr->params.priority < rsv->params.priority){
+    //printk("zsrm.start_acct: ptr(%d) preempted by rsv(%d)\n",active_reserve_ptr->rid,rsv->rid);
+    stop_accounting(active_reserve_ptr, 
+		    DONT_UPDATE_HIGHEST_PRIORITY_TASK);
+    rsv->next_lower_priority = active_reserve_ptr;
+    active_reserve_ptr = rsv;
+    rsv->job_resumed_timestamp_nanos = ticks2nanos(rdtsc());
+  } else{
+    struct zs_reserve *tmp = active_reserve_ptr;
+    //printk("zsrm.start_acct: ptr(%d) top prio. rsv(%d) to queue\n",active_reserve_ptr->rid,rsv->rid);
+    while (tmp->next_lower_priority != NULL && 
+	   tmp->next_lower_priority->params.priority >= rsv->params.priority)
+      tmp = tmp->next_lower_priority;
+    rsv->next_lower_priority = tmp->next_lower_priority;
+    tmp->next_lower_priority = rsv;
+  }
+}
+
+void stop_accounting(struct zs_reserve *rsv, int update_active_highest_priority){
+  unsigned long long job_stop_timestamp_nanos;
+  if (active_reserve_ptr == rsv){
+    //printk("zsrm.stop_acct: ptr(%d) == rsv(%d) -- stopping\n",active_reserve_ptr->rid,rsv->rid);
+    job_stop_timestamp_nanos = ticks2nanos(rdtsc());
+    rsv->job_executing_nanos += job_stop_timestamp_nanos - 
+      rsv->job_resumed_timestamp_nanos;
+    if (update_active_highest_priority){
+      active_reserve_ptr = rsv->next_lower_priority;
+      if (active_reserve_ptr != NULL)
+	start_accounting(active_reserve_ptr);
+    }
+  } else {
+    //printk("zsrm.stop_acct: ptr(%d) != rsv(%d) not top priority\n",active_reserve_ptr->rid,rsv->rid);
+  }
 }
 
 int init_sys_mode_transitions(){
@@ -426,10 +608,8 @@ static void scheduler_task(void *a){
 	struct sched_param p;
 	struct task_struct *task;
 
-	//set_current_state(TASK_INTERRUPTIBLE);
 	while (!kthread_should_stop()) {
 		while ((rid = pop_to_reschedule()) != -1) {
-		  //task = find_task_by_pid_ns(reserve_table[rid].pid, current->nsproxy->pid_ns);
 		  task = gettask(reserve_table[rid].pid);
 			if (task == NULL){
 				printk("scheduler_task : wrong pid(%d) for rid(%d)\n",reserve_table[rid].pid,rid);
@@ -439,9 +619,10 @@ static void scheduler_task(void *a){
 				reserve_table[rid].request_stop = 0;
 				
 				//set_task_state(task, TASK_INTERRUPTIBLE);
-				printk(KERN_INFO "enforcing pid(%d) rid(%d)\n",reserve_table[rid].pid, rid);
 				p.sched_priority = 0;
 				sched_setscheduler(task, SCHED_NORMAL, &p);
+				stop_accounting(&reserve_table[rid],
+						UPDATE_HIGHEST_PRIORITY_TASK);
 
 				// measurement of enforcement
 				end_of_enforcement_ts_ns = ticks2nanos(rdtsc());
@@ -460,13 +641,15 @@ static void scheduler_task(void *a){
 				if (end_of_enforcement_ts_ns > enforcement_latency_ns_worst)
 				  enforcement_latency_ns_worst = end_of_enforcement_ts_ns;
 				// end of measurement code
-			} else{
+			} else {
 				if (reserve_table[rid].critical_utility_mode_enforced){
 					reserve_table[rid].critical_utility_mode_enforced = 0;
 					//wake_up_process(task);
 				}
 				p.sched_priority = reserve_table[rid].effective_priority;
 				sched_setscheduler(task, SCHED_FIFO, &p);
+				reserve_table[rid].execution_status = EXEC_RUNNING;
+				start_accounting(&reserve_table[rid]);
 			}
 		}
 		set_current_state(TASK_INTERRUPTIBLE);
@@ -509,7 +692,9 @@ enum hrtimer_restart zs_instant_handler(struct hrtimer *timer){
 		spin_unlock_irqrestore(&zsrmlock,flags);
 		return HRTIMER_NORESTART;
 	}
-	period_degradation(rid);
+	// currently running not paused or dropped
+	if (reserve_table[rid].execution_status == EXEC_RUNNING)
+	  period_degradation(rid);
 	spin_unlock_irqrestore(&zsrmlock,flags);
 	return HRTIMER_NORESTART;
 }
@@ -529,7 +714,8 @@ void record_latest_deadline(struct timespec *relative_deadline){
   unsigned long long now_ns;
   unsigned long long rdeadline_ns;
 
-  jiffies_to_timespec(jiffies, &now);
+  //jiffies_to_timespec(jiffies, &now);
+  now2timespec(&now);
   now_ns = ((unsigned long long)now.tv_sec) * 1000000000ll +
     ((unsigned long long) now.tv_nsec);
 	
@@ -593,7 +779,8 @@ enum hrtimer_restart period_handler(struct hrtimer *timer){
 	int mode_change=0;
 
 	spin_lock_irqsave(&zsrmlock,flags);
-	jiffies_to_timespec(jiffies, &now);
+	//jiffies_to_timespec(jiffies, &now);
+	now2timespec(&now);
 	now_ns = TIMESPEC2NS(&now);
 
 	arrival_ts_ns = ticks2nanos(rdtsc());
@@ -663,10 +850,11 @@ enum hrtimer_restart period_handler(struct hrtimer *timer){
 	// if not in modal_scheduling the newmode == 0 => != DISABLED_MODE
 	if (newmode != DISABLED_MODE){
 	  p = get_current_effective_period(rid);
-	  wake_up_process(task);
-	  printk(KERN_INFO "Wakeup(task) 1\n");
 
-	  //printk(KERN_INFO "period timer : %ld secs: %ld ns \n",p->tv_sec, p->tv_nsec);
+	  //wake_up_process(task);
+	  //printk(KERN_INFO "Wakeup(task) rid(%d) 1\n",rid);
+
+	  printk(KERN_INFO "period timer rid(%d) : %ld secs: %ld ns \n",rid,p->tv_sec, p->tv_nsec);
 	  kperiod = ktime_set(p->tv_sec,p->tv_nsec);
 	  hrtimer_init(&(reserve_table[rid].period_timer),CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	  reserve_table[rid].period_timer.function = period_handler;
@@ -696,13 +884,21 @@ enum hrtimer_restart period_handler(struct hrtimer *timer){
 	  hrtimer_init(&(reserve_table[rid].zs_timer),CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	  reserve_table[rid].zs_timer.function = zs_instant_handler;
 	  hrtimer_start(&(reserve_table[rid].zs_timer), kzs, HRTIMER_MODE_REL);
-	  jiffies_to_timespec(jiffies, &reserve_table[rid].start_of_period);
+	  //jiffies_to_timespec(jiffies, &reserve_table[rid].start_of_period);
+	  now2timespec(&reserve_table[rid].start_of_period);
 	  record_latest_deadline(&(reserve_table[rid].params.period));
 	  //printk("waking up process: %d at %ld:%ld\n",reserve_table[rid].pid,now.tv_sec, now.tv_nsec);
 	  reserve_table[rid].effective_priority = (reserve_table[rid].current_degraded_mode == -1) ? reserve_table[rid].params.priority :
 	    reserve_table[rid].params.degraded_priority[reserve_table[rid].current_degraded_mode];
 	  // only wake it up if it was not enforced
-	  if (reserve_table[rid].critical_utility_mode_enforced == 0){
+	  if (reserve_table[rid].critical_utility_mode_enforced == 0 &&
+	      !(reserve_table[rid].execution_status & EXEC_ENFORCED_DROPPED) &&
+	      !(reserve_table[rid].execution_status & EXEC_ENFORCED_PAUSED) ){
+
+	    // moved the wakeup call here to ensure only waking up when not enforced
+	    reserve_table[rid].execution_status = EXEC_RUNNING;
+	    wake_up_process(task);
+	    printk(KERN_INFO "Wakeup(task) rid(%d) 1\n",rid);
 	    push_to_reschedule(rid);
 	    wake_up_process(sched_task);
 	    set_tsk_need_resched(task);
@@ -878,7 +1074,8 @@ int mode_transition(int mrid, int tid){
       (unsigned long long) reserve_table[rid].start_of_period.tv_nsec;
     abs_zsi = ((unsigned long long)zsts->tv_sec)* 1000000000ll + (unsigned long long) zsts->tv_nsec;
     abs_zsi = start_of_period_ns + abs_zsi;
-    jiffies_to_timespec(jiffies, &now);
+    //jiffies_to_timespec(jiffies, &now);
+    now2timespec(&now);
     now_ns = ((unsigned long long) now.tv_sec) * 1000000000ll + (unsigned long long) now.tv_nsec;
 
     // moved to sys_mode_transition
@@ -967,6 +1164,9 @@ int attach_reserve_transitional(int rid, int pid, struct timespec *trans_zs_inst
 	reserve_table[rid].in_critical_mode = 0;
 	reserve_table[rid].current_degraded_mode = -1;
 	reserve_table[rid].critical_utility_mode_enforced = 0;
+	reserve_table[rid].execution_status = EXEC_RUNNING;
+	reserve_table[rid].next_lower_priority = NULL;
+	reserve_table[rid].next_paused_lower_criticality=NULL;
 	p.sched_priority = reserve_table[rid].params.priority;
 	sched_setscheduler(task,SCHED_FIFO, &p);
 
@@ -995,7 +1195,9 @@ int attach_reserve_transitional(int rid, int pid, struct timespec *trans_zs_inst
 		hrtimer_start(&(reserve_table[rid].response_time_timer),kresptime, HRTIMER_MODE_REL);
 	}
 
-	jiffies_to_timespec(jiffies, &reserve_table[rid].start_of_period);
+	//jiffies_to_timespec(jiffies, &reserve_table[rid].start_of_period);
+	now2timespec(&reserve_table[rid].start_of_period);
+	start_accounting(&reserve_table[rid]);
 
 	set_tsk_need_resched(task);
 	set_tsk_need_resched(current);
@@ -1016,52 +1218,74 @@ int find_empty_entry(void){
 }
 
 void finish_period_degradation(int rid){
-	long max_marginal_utility=0;
-	long tmp_marginal_utility=0;
-	int i;
+  long max_marginal_utility=0;
+  long tmp_marginal_utility=0;
+  int i;
+  
+  reserve_table[rid].in_critical_mode = 0;
 
-	reserve_table[rid].in_critical_mode = 0;
-	
-	// find the max marginal utility of reserves
-	// in critical mode
-	for (i=0;i<MAX_RESERVES; i++){
-		// empty reserves
-		if (reserve_table[i].params.priority == -1)
-			continue; 
-		if (!reserve_table[i].in_critical_mode)
-			continue;
+  // find the max marginal utility of reserves
+  // in critical mode
+  for (i=0;i<MAX_RESERVES; i++){
+    // empty reserves
+    if (reserve_table[i].params.priority == -1)
+      continue; 
+    if (!reserve_table[i].in_critical_mode)
+      continue;
+    
+    tmp_marginal_utility = GET_EFFECTIVE_UTILITY(i);
+    if (tmp_marginal_utility > max_marginal_utility)
+      max_marginal_utility = tmp_marginal_utility;
+  }
+  
+  system_utility = max_marginal_utility;
+  
+  // check if the reserve overloaded
+  if (reserve_table[rid].job_executing_nanos > reserve_table[rid].nominal_exectime_nanos){
+    // overloaded. Kill paused jobs
+    printk("rid(%d) overloaded killing paused reserves\n",rid);
+    kill_paused_reserves(reserve_table[rid].params.overloaded_marginal_utility);
+  } else {
+    // did not overload. Resume jobs with new system_utility
+    printk("rid(%d) DID NOT overload resuming paused reserves at criticality(%ld)\n",rid,system_utility);
+    resume_paused_reserves(system_utility);
+  }
 
-		tmp_marginal_utility = 	GET_EFFECTIVE_UTILITY(i);
-		if (tmp_marginal_utility > max_marginal_utility)
-			max_marginal_utility = tmp_marginal_utility;
+
+  for (i=0; i< MAX_RESERVES; i++){
+    // empty reserves
+    if (reserve_table[i].params.priority == -1)
+      continue; 
+    
+    /* if (reserve_table[i].params.overloaded_marginal_utility >= system_utility){ */
+    /*   reserve_table[i].effective_priority = reserve_table[i].params.priority; */
+    /*   reserve_table[i].current_degraded_mode = -1; */
+    /*   reserve_table[i].just_returned_from_degradation=1; */
+    /*   if ((reserve_table[i].execution_status & EXEC_ENFORCED_DROPPED) || */
+    /* 	  (reserve_table[i].execution_status & EXEC_ENFORCED_PAUSED)){ */
+    /* 	resume_reserve(&reserve_table[i]); */
+    /*   } else { */
+    /* 	push_to_reschedule(i); */
+    /*   } */
+    /* } else  */
+
+    // only for ZS-QRAM
+    if (reserve_table[i].params.num_degraded_modes >0){
+      if (reserve_table[i].params.overloaded_marginal_utility < system_utility){
+	int selected_mode=0;
+	while(selected_mode < reserve_table[i].params.num_degraded_modes &&
+	      reserve_table[i].params.degraded_marginal_utility[selected_mode][1] < system_utility)
+	  selected_mode++;
+	if (selected_mode < reserve_table[i].params.num_degraded_modes){
+	  reserve_table[i].current_degraded_mode = selected_mode;
+	  reserve_table[i].effective_priority = reserve_table[i].params.degraded_priority[selected_mode];
+	  push_to_reschedule(i);
 	}
-
-	system_utility = max_marginal_utility;
-
-	for (i=0; i< MAX_RESERVES; i++){
-		// empty reserves
-		if (reserve_table[i].params.priority == -1)
-			continue; 
-
-		if (reserve_table[i].params.overloaded_marginal_utility >= system_utility){
-			reserve_table[i].effective_priority = reserve_table[i].params.priority;
-			push_to_reschedule(i);
-			reserve_table[i].current_degraded_mode = -1;
-			reserve_table[i].just_returned_from_degradation=1;
-		} else {
-			int selected_mode=0;
-			while(selected_mode < reserve_table[i].params.num_degraded_modes &&
-				reserve_table[i].params.degraded_marginal_utility[selected_mode][1] < system_utility)
-				selected_mode++;
-			if (selected_mode < reserve_table[i].params.num_degraded_modes){
-				reserve_table[i].current_degraded_mode = selected_mode;
-				reserve_table[i].effective_priority = reserve_table[i].params.degraded_priority[selected_mode];
-				push_to_reschedule(i);
-			}
-		}
-	}
-	wake_up_process(sched_task);
-	set_tsk_need_resched(current);
+      }
+    }
+  }
+  wake_up_process(sched_task);
+  set_tsk_need_resched(current);
 }
 
 void try_resume_normal_period(int rid){
@@ -1073,7 +1297,8 @@ void try_resume_normal_period(int rid){
 	u32 ns_reminder;
 	ktime_t kperiod;
 
-	jiffies_to_timespec(jiffies, &now);
+	//jiffies_to_timespec(jiffies, &now);
+	now2timespec(&now);
 	now_ns = ((unsigned long long) now.tv_sec) * 1000000000ll + (unsigned long long) now.tv_nsec;
 	zs_elapsed_ns = ((unsigned long long)reserve_table[rid].start_of_period.tv_sec) * 1000000000ll + (unsigned long long) reserve_table[rid].start_of_period.tv_nsec;
 	zs_elapsed_ns = now_ns - zs_elapsed_ns;
@@ -1103,7 +1328,8 @@ void extend_period_timer(int rid, struct timespec *p){
 	u32 ns_reminder;
 	ktime_t kperiod;
 
-	jiffies_to_timespec(jiffies, &now);
+	//jiffies_to_timespec(jiffies, &now);
+	now2timespec(&now);
 	now_ns = ((unsigned long long) now.tv_sec) * 1000000000ll + (unsigned long long) now.tv_nsec;
 	zs_elapsed_ns = ((unsigned long long)reserve_table[rid].start_of_period.tv_sec) * 1000000000ll + (unsigned long long) reserve_table[rid].start_of_period.tv_nsec;
 	zs_elapsed_ns = now_ns - zs_elapsed_ns;
@@ -1125,86 +1351,89 @@ void extend_period_timer(int rid, struct timespec *p){
 }
 
 void period_degradation(int rid){
-	long current_marginal_utility;
-	long tmp_marginal_utility;
-	int i,j;
-	int maxreserves = (modal_scheduling == 0 ? MAX_RESERVES : MAX_MODAL_RESERVES);
+  long current_marginal_utility;
+  long tmp_marginal_utility;
+  int i,j;
+  int maxreserves = (modal_scheduling == 0 ? MAX_RESERVES : MAX_MODAL_RESERVES);
+  
+  
+  printk(KERN_INFO "period degradation:start\n");
+  current_marginal_utility = GET_EFFECTIVE_UTILITY(rid);
+  
+  reserve_table[rid].in_critical_mode = 1;
+  
+  printk(KERN_INFO "period degradation rid(%d) curr utility: %ld, system_utility: %ld\n",rid,current_marginal_utility, system_utility);
+  if (system_utility < current_marginal_utility){
+    system_utility = current_marginal_utility;
+    if (reserve_table[rid].params.critical_util_degraded_mode != -1){
+      if (reserve_table[rid].current_degraded_mode == -1 || reserve_table[rid].current_degraded_mode < reserve_table[rid].params.critical_util_degraded_mode){
+	reserve_table[rid].current_degraded_mode = reserve_table[rid].params.critical_util_degraded_mode;
+	extend_period_timer(rid, &reserve_table[rid].params.degraded_period[reserve_table[rid].params.critical_util_degraded_mode]);
+	reserve_table[rid].effective_priority = reserve_table[rid].params.degraded_priority[reserve_table[rid].current_degraded_mode];
+	push_to_reschedule(rid);
+      }
+    } 
+  } 
+  
+  // now degrade all others  
+  for (j=0;j < maxreserves; j++){	  
 
-
-	printk(KERN_INFO "period degradation:start\n");
-	current_marginal_utility = GET_EFFECTIVE_UTILITY(rid);
-
-	reserve_table[rid].in_critical_mode = 1;
-
-	printk(KERN_INFO "period degradation rid(%d) curr utility: %ld, system_utility: %ld\n",rid,current_marginal_utility, system_utility);
-	if (system_utility < current_marginal_utility){
-		system_utility = current_marginal_utility;
-		if (reserve_table[rid].params.critical_util_degraded_mode != -1){
-			if (reserve_table[rid].current_degraded_mode == -1 || reserve_table[rid].current_degraded_mode < reserve_table[rid].params.critical_util_degraded_mode){
-				reserve_table[rid].current_degraded_mode = reserve_table[rid].params.critical_util_degraded_mode;
-				extend_period_timer(rid, &reserve_table[rid].params.degraded_period[reserve_table[rid].params.critical_util_degraded_mode]);
-				reserve_table[rid].effective_priority = reserve_table[rid].params.degraded_priority[reserve_table[rid].current_degraded_mode];
-				push_to_reschedule(rid);
-			}
-		}
-	}
-
-	// now degrade all others
+    if (modal_scheduling){
+      if (!modal_reserve_table[j].in_use)
+	continue;
+      // get the normal reseve
+      i = modal_reserve_table[j].reserve_for_mode[modal_reserve_table[j].mode];
+    } else {
+      i=j;
+    }
+    
+    
+    // skip empty reserves
+    if (reserve_table[i].params.priority == -1)
+      continue;
+    
+    
+    tmp_marginal_utility = GET_EFFECTIVE_UTILITY(i);
+    
+    printk(KERN_INFO "period degradation checking rid(%d) util:%ld sysutil:%ld\n",i,tmp_marginal_utility, system_utility);
+    if (tmp_marginal_utility < system_utility){
+      int selected_mode=0;
+      while(selected_mode < (reserve_table[i].params.num_degraded_modes) &&
+	    reserve_table[i].params.degraded_marginal_utility[selected_mode][1] < system_utility)
+	selected_mode++;
+      if (selected_mode < reserve_table[i].params.num_degraded_modes){
+	reserve_table[i].current_degraded_mode = selected_mode;
+	reserve_table[i].just_returned_from_degradation=0;
+	extend_period_timer(i, &reserve_table[i].params.degraded_period[selected_mode]);
+	reserve_table[i].effective_priority = reserve_table[i].params.degraded_priority[selected_mode];
+	push_to_reschedule(i);
+      } else {
+	// stop the task
+	reserve_table[i].critical_utility_mode_enforced = 1;
+	reserve_table[i].just_returned_from_degradation=0;
 	
-	for (j=0;j < maxreserves; j++){	  
-	  if (modal_scheduling){
-	    if (!modal_reserve_table[j].in_use)
-	      continue;
-	    // get the normal reseve
-	    i = modal_reserve_table[j].reserve_for_mode[modal_reserve_table[j].mode];
-	  } else {
-	    i=j;
+	printk(KERN_INFO "period degrad: stopping task with rid(%d)\n",i);
+
+	pause_reserve(&reserve_table[i]);
+
+	/* reserve_table[i].request_stop = 1; */
+	/* push_to_reschedule(i); */
+	/* wake_up_process(sched_task); */
+	/* set_tsk_need_resched(current); */
+	
+	
+	//task = gettask(reserve_table[i].pid);
+	/*
+	  if (task != NULL){
+	  task->state = TASK_INTERRUPTIBLE;
+	  set_tsk_need_resched(task);
 	  }
-
-
-	  // skip empty reserves
-	  if (reserve_table[i].params.priority == -1)
-	    continue;
-	  
-
-	  tmp_marginal_utility = GET_EFFECTIVE_UTILITY(i);
-	  
-	  printk(KERN_INFO "period degradation checking rid(%d) util:%ld sysutil:%ld\n",i,tmp_marginal_utility, system_utility);
-	  if (tmp_marginal_utility < system_utility){
-	    int selected_mode=0;
-	    while(selected_mode < (reserve_table[i].params.num_degraded_modes) &&
-		  reserve_table[i].params.degraded_marginal_utility[selected_mode][1] < system_utility)
-	      selected_mode++;
-	    if (selected_mode < reserve_table[i].params.num_degraded_modes){
-	      reserve_table[i].current_degraded_mode = selected_mode;
-	      reserve_table[i].just_returned_from_degradation=0;
-	      extend_period_timer(i, &reserve_table[i].params.degraded_period[selected_mode]);
-	      reserve_table[i].effective_priority = reserve_table[i].params.degraded_priority[selected_mode];
-	      push_to_reschedule(i);
-	    } else {
-	      // stop the task
-	      reserve_table[i].critical_utility_mode_enforced = 1;
-	      reserve_table[i].just_returned_from_degradation=0;
-	      
-	      printk(KERN_INFO "period degrad: stopping task with rid(%d)\n",i);
-	      reserve_table[i].request_stop = 1;
-	      push_to_reschedule(i);
-	      wake_up_process(sched_task);
-	      set_tsk_need_resched(current);
-	      
-	      
-	      //task = gettask(reserve_table[i].pid);
-	      /*
-		if (task != NULL){
-		task->state = TASK_INTERRUPTIBLE;
-		set_tsk_need_resched(task);
-		}
-	      */
-	    }
-	  }
-	}
-	wake_up_process(sched_task);
-	set_tsk_need_resched(current);
+	*/
+      }
+    }
+  }
+  wake_up_process(sched_task);
+  set_tsk_need_resched(current);
 }
 
 int modal_wait_for_next_period(int mrid){
@@ -1229,31 +1458,40 @@ int modal_wait_for_next_period(int mrid){
 }
 
 int wait_for_next_period(int rid){
-	hrtimer_cancel(&(reserve_table[rid].zs_timer));
-	if (reserve_table[rid].params.enforcement_mask & ZS_RESPONSE_TIME_ENFORCEMENT_MASK){
-		hrtimer_cancel(&(reserve_table[rid].response_time_timer));
-	}
-	if (reserve_table[rid].in_critical_mode){
-		finish_period_degradation(rid);
-	}
-	if (reserve_table[rid].just_returned_from_degradation){
-		reserve_table[rid].just_returned_from_degradation = 0;
-		// Dio: it seems that this is unstable.
-		//try_resume_normal_period(rid);
-	}
+  hrtimer_cancel(&(reserve_table[rid].zs_timer));
+  if (reserve_table[rid].params.enforcement_mask & ZS_RESPONSE_TIME_ENFORCEMENT_MASK){
+    hrtimer_cancel(&(reserve_table[rid].response_time_timer));
+  }
 
-	// create loop to check if the task was interrupted 
-	// by a signal that was sent to it and if so go back
-	// to sleep.
-	set_current_state(TASK_UNINTERRUPTIBLE);
-	return 0;
+  stop_accounting(&reserve_table[rid],UPDATE_HIGHEST_PRIORITY_TASK);
+
+  if (reserve_table[rid].in_critical_mode){
+    finish_period_degradation(rid);
+  }
+  if (reserve_table[rid].just_returned_from_degradation){
+    reserve_table[rid].just_returned_from_degradation = 0;
+    // Dio: it seems that this is unstable.
+    //try_resume_normal_period(rid);
+  }
+
+
+  // reset the job_executing_nanos
+  reserve_table[rid].job_executing_nanos=0L;
+
+  reserve_table[rid].execution_status |= EXEC_WAIT_NEXT_PERIOD;
+  // create loop to check if the task was interrupted 
+  // by a signal that was sent to it and if so go back
+  // to sleep.
+  set_current_state(TASK_UNINTERRUPTIBLE);
+  return 0;
 }
 
 int delete_reserve(int rid){
 	if (reserve_table[rid].pid != -1){
 		detach_reserve(rid);
 	}
-	reserve_table[rid].params.priority = -1;	
+	reserve_table[rid].params.priority = -1;
+	reserve_table[rid].execution_status = EXEC_BEFORE_START;
 	return 0;
 }
 
@@ -1304,6 +1542,12 @@ int detach_reserve(int rid){
 	if (reserve_table[rid].params.enforcement_mask & ZS_RESPONSE_TIME_ENFORCEMENT_MASK){
 		hrtimer_cancel(&(reserve_table[rid].response_time_timer));
 	}
+	stop_accounting(&reserve_table[rid], UPDATE_HIGHEST_PRIORITY_TASK);
+
+	if (reserve_table[rid].in_critical_mode){
+	  finish_period_degradation(rid);
+	}
+
 	// mark as detached
 	reserve_table[rid].pid = -1;
 	return 0;
@@ -1367,8 +1611,9 @@ int restore_base_priority_criticality(int rid){
     sched_setscheduler(task,SCHED_FIFO,&p);
   } else {
     // it should be enforced
-    reserve_table[rid].request_stop =1;
-    push_to_reschedule(rid);
+    pause_reserve(&reserve_table[rid]);
+    /* reserve_table[rid].request_stop = 1; */
+    /* push_to_reschedule(rid); */
     wake_up_process(sched_task);
     set_tsk_need_resched(current);
   }
@@ -1378,224 +1623,248 @@ int restore_base_priority_criticality(int rid){
 
 void init(void){
   int i,j;
-
-	for (i=0;i<MAX_RESERVES;i++){
-		reserve_table[i].params.priority = -1; // mark as empty
-		reserve_table[i].params.enforcement_mask = 0;
-		reserve_table[i].current_degraded_mode = -1;
-		reserve_table[i].just_returned_from_degradation=0;
-		reserve_table[i].in_critical_mode = 0;
-		reserve_table[i].pid = -1;
-		reserve_table[i].request_stop = 0;
-		reserve_table[i].parent_modal_reserve_id=-1;
-	}
-
-	for (i=0;i<MAX_MODAL_RESERVES;i++){
-	  modal_reserve_table[i].in_use=0;
-	  modal_reserve_table[i].pid=-1;
-	  modal_reserve_table[i].mode=0;
-	  modal_reserve_table[i].in_transition=0;
-	  modal_reserve_table[i].active_transition=-1;
-	  modal_reserve_table[i].mode_change_pending=0;
-	  modal_reserve_table[i].num_modes=0;
-	  modal_reserve_table[i].num_transitions=0;
-	  for (j=0;j<MAX_RESERVES;j++){
-	    modal_reserve_table[i].reserve_for_mode[j]=-1;
-	  }
-	}
-
-	init_sys_mode_transitions();
+  
+  for (i=0;i<MAX_RESERVES;i++){
+    reserve_table[i].rid=i;
+    reserve_table[i].params.priority = -1; // mark as empty
+    reserve_table[i].params.enforcement_mask = 0;
+    reserve_table[i].current_degraded_mode = -1;
+    reserve_table[i].just_returned_from_degradation=0;
+    reserve_table[i].in_critical_mode = 0;
+    reserve_table[i].pid = -1;
+    reserve_table[i].request_stop = 0;
+    reserve_table[i].parent_modal_reserve_id=-1;
+    reserve_table[i].execution_status = EXEC_BEFORE_START;
+    reserve_table[i].next_lower_priority = NULL;
+  }
+  
+  for (i=0;i<MAX_MODAL_RESERVES;i++){
+    modal_reserve_table[i].in_use=0;
+    modal_reserve_table[i].pid=-1;
+    modal_reserve_table[i].mode=0;
+    modal_reserve_table[i].in_transition=0;
+    modal_reserve_table[i].active_transition=-1;
+    modal_reserve_table[i].mode_change_pending=0;
+    modal_reserve_table[i].num_modes=0;
+    modal_reserve_table[i].num_transitions=0;
+    for (j=0;j<MAX_RESERVES;j++){
+      modal_reserve_table[i].reserve_for_mode[j]=-1;
+    }
+  }
+  
+  init_sys_mode_transitions();
 }
 
 void delete_all_reserves(void){
-	int i;
-
-	for (i=0;i<MAX_RESERVES;i++){
-		if (reserve_table[i].params.priority != -1){
-			delete_reserve(i);
-		}
-	}
+  int i;
+  
+  for (i=0;i<MAX_RESERVES;i++){
+    if (reserve_table[i].params.priority != -1){
+      delete_reserve(i);
+    }
+  }
 }
 
 
 /* dummy function. */
 static int zsrm_open(struct inode *inode, struct file *filp)
 {
-	return 0;
+  return 0;
 }
 
 /* dummy function. */
 static int zsrm_release(struct inode *inode, struct file *filp)
 {
-	return 0;
+  return 0;
 }
 
 
 static ssize_t zsrm_write
 (struct file *file, const char *buf, size_t count, loff_t *offset)
 {
-	int need_reschedule=0;
-	int res = 0, i;
-	struct api_call call;
-	unsigned long flags;
+  int need_reschedule=0;
+  int res = 0, i;
+  struct api_call call;
+  unsigned long flags;
+  
+  /* copy data to kernel buffer. */
+  if (copy_from_user(&call, buf, count)) {
+    printk(KERN_WARNING "ZSRMM: failed to copy data.\n");
+    return -EFAULT;
+  }
 
-	/* copy data to kernel buffer. */
-	if (copy_from_user(&call, buf, count)) {
-		printk(KERN_WARNING "MZSRMM: failed to copy data.\n");
-		return -EFAULT;
-	}
-	
-	spin_lock_irqsave(&zsrmlock,flags);
-	switch (call.api_id) {
-	case CREATE_RESERVE:
-		i = find_empty_entry();
-		if (i==-1)
-			res = -1;
-		else {	
-			memcpy(&reserve_table[i].params,
-				&(call.args.reserve_parameters), 
-				sizeof(struct zs_reserve_params));
-			if (reserve_table[i].params.reserve_type == CRITICALITY_RESERVE){
-			  reserve_table[i].params.normal_marginal_utility = reserve_table[i].params.criticality;
-			  reserve_table[i].params.overloaded_marginal_utility = reserve_table[i].params.criticality;
-			  reserve_table[i].params.critical_util_degraded_mode = -1;
-			  reserve_table[i].params.num_degraded_modes=0;
-			  printk("create reserve id(%d) CRITICALITY RESERVE\n",i);
-			} else {
-			  printk("create reserve id(%d) OTHER RESERVE\n",i);
-			}
-				create_reserve(i);
-				res = i;
-		}
-		break;
-	case CREATE_MODAL_RESERVE:
-	  i = create_modal_reserve(call.args.num_modes);
-	  res = i;
-	  break;
-	case SET_INITIAL_MODE_MODAL_RESERVE:
-	  res = set_initial_mode_modal_reserve(call.args.set_initial_mode_params.modal_reserve_id,
-					       call.args.set_initial_mode_params.initial_mode_id);
-	  break;
-	case ADD_RESERVE_TO_MODE:
-	  res= add_reserve_to_mode(call.args.rsv_to_mode_params.modal_reserve_id, 
-			      call.args.rsv_to_mode_params.mode_id,
-			      call.args.rsv_to_mode_params.reserve_id);
-	  break;
-	case ADD_MODE_TRANSITION:
-	  res = add_mode_transition(call.args.add_mode_transition_params.modal_reserve_id, 
+  // try to lock semaphore to prevent concurrent syscalls
+  // before disabling interrupts  
+  if ((res = down_interruptible(&zsrmsem)) < 0){
+    return res;
+  } 
+
+  // disable interrupts to avoid concurrent interrupts
+  spin_lock_irqsave(&zsrmlock,flags);
+  
+  switch (call.api_id) {
+  case CREATE_RESERVE:
+    i = find_empty_entry();
+    if (i==-1)
+      res = -1;
+    else {	
+      memcpy(&reserve_table[i].params,
+	     &(call.args.reserve_parameters), 
+	     sizeof(struct zs_reserve_params));
+      reserve_table[i].nominal_exectime_nanos = 
+	reserve_table[i].params.execution_time.tv_sec * 1000000000L +
+	reserve_table[i].params.execution_time.tv_nsec;
+      reserve_table[i].overload_exectime_nanos = 
+	reserve_table[i].params.overload_execution_time.tv_sec * 1000000000L +
+	reserve_table[i].params.overload_execution_time.tv_nsec;
+      if (reserve_table[i].params.reserve_type == CRITICALITY_RESERVE){
+	reserve_table[i].params.normal_marginal_utility = reserve_table[i].params.criticality;
+	reserve_table[i].params.overloaded_marginal_utility = reserve_table[i].params.criticality;
+	reserve_table[i].params.critical_util_degraded_mode = -1;
+	reserve_table[i].params.num_degraded_modes=0;
+	printk("create reserve id(%d) CRITICALITY RESERVE\n",i);
+      } else {
+	printk("create reserve id(%d) OTHER RESERVE\n",i);
+      }
+      create_reserve(i);
+      res = i;
+    }
+    break;
+  case CREATE_MODAL_RESERVE:
+    i = create_modal_reserve(call.args.num_modes);
+    res = i;
+    break;
+  case SET_INITIAL_MODE_MODAL_RESERVE:
+    res = set_initial_mode_modal_reserve(call.args.set_initial_mode_params.modal_reserve_id,
+					 call.args.set_initial_mode_params.initial_mode_id);
+    break;
+  case ADD_RESERVE_TO_MODE:
+    res= add_reserve_to_mode(call.args.rsv_to_mode_params.modal_reserve_id, 
+			     call.args.rsv_to_mode_params.mode_id,
+			     call.args.rsv_to_mode_params.reserve_id);
+    break;
+  case ADD_MODE_TRANSITION:
+    res = add_mode_transition(call.args.add_mode_transition_params.modal_reserve_id, 
 			      call.args.add_mode_transition_params.transition_id,
 			      &call.args.add_mode_transition_params.transition);  
-	  break;
-	case ATTACH_MODAL_RESERVE:
-	    res = attach_modal_reserve(call.args.attach_params.reserveid,
-				 call.args.attach_params.pid);
-	    modal_scheduling = 1;
-	  break;
-	case DETACH_MODAL_RESERVE:
-	  res = detach_modal_reserve(call.args.reserveid);
-	  break;
-	case DELETE_MODAL_RESERVE:
-	  res = delete_modal_reserve(call.args.reserveid);
-	  break;
-	case CREATE_SYS_TRANSITION:
-	  res = create_sys_mode_transition();
-	  break;
-	case ADD_TRANSITION_TO_SYS_TRANSITION:
-	  res = add_transition_to_sys_transition(call.args.trans_to_sys_trans_params.sys_transition_id,
-						 call.args.trans_to_sys_trans_params.mrid,
-						 call.args.trans_to_sys_trans_params.transition_id);
-	  break;
-	case DELETE_SYS_TRANSITION:
-	  res = delete_sys_mode_transition(call.args.reserveid);
-	  break;
-	case MODE_SWITCH:
-	  request_mode_change_ts_ns = ticks2nanos(rdtsc());
-	  sys_mode_transition(call.args.mode_switch_params.transition_id);
-	  mode_change_signals_sent_ts_ns=ticks2nanos(rdtsc());
-	  mode_change_signals_sent_ts_ns -= request_mode_change_ts_ns;
-#ifdef __ARMCORE__
-	  mode_change_latency_ns_avg = mode_change_latency_ns_avg + mode_change_signals_sent_ts_ns;
-	  do_div(mode_change_latency_ns_avg,2);
-#else
-	  mode_change_latency_ns_avg = (mode_change_latency_ns_avg + 
-					mode_change_signals_sent_ts_ns) / 2;
-#endif
-	  if (mode_change_signals_sent_ts_ns > mode_change_latency_ns_worst)
-	    mode_change_latency_ns_worst = mode_change_signals_sent_ts_ns;
-
-	  need_reschedule = 1;
-	  break;
-	case ATTACH_RESERVE:
-	  res = attach_reserve(call.args.attach_params.reserveid, 
+    break;
+  case ATTACH_MODAL_RESERVE:
+    res = attach_modal_reserve(call.args.attach_params.reserveid,
 			       call.args.attach_params.pid);
-	  break;
-	case DETACH_RESERVE:
-	  res = detach_reserve(call.args.reserveid);
-	  break;
-	case DELETE_RESERVE:
-	  res = delete_reserve(call.args.reserveid);
-	  break;
-	case MODAL_WAIT_NEXT_PERIOD:
-	  res = modal_wait_for_next_period(call.args.reserveid);
-	  need_reschedule = 1;
-	  break;
-	case WAIT_NEXT_PERIOD:
-	  res = wait_for_next_period(call.args.reserveid);
-	  need_reschedule = 1;
-	  break;
-	case RAISE_PRIORITY_CRITICALITY:
-	  {
-	    int rsvid = pid2reserve(current->pid);
-	    if (rsvid != -1){
-	      res = raise_priority_criticality(rsvid,
-					       call.args.raise_priority_criticality_params.priority_ceiling,
-					       call.args.raise_priority_criticality_params.criticality_ceiling);
-	      need_reschedule = 1;
-	    } else {
-	      res = -1;
-	    }
-	    break;
-	  }
-	case RESTORE_BASE_PRIORITY_CRITICALITY:
-	  {
-	    int rsvid = pid2reserve(current->pid);
-	    if (rsvid != -1){
-	      res = restore_base_priority_criticality(rsvid);
-	      need_reschedule = 1;
-	    } else {
-	      res = -1;
-	    }
-	    break;
-	  }
-	case GET_JIFFIES_MS:
-	  res = get_jiffies_ms();
-	  break;
-	case PRINT_STATS:
-	  res=print_stats();
-	  break;
-	default: /* illegal api identifier. */
-	  res = -1;
-	  printk(KERN_WARNING "MZSRMM: illegal API identifier.\n");
-	  break;
-	}
-	spin_unlock_irqrestore(&zsrmlock,flags);
-	if (need_reschedule){
-	  schedule();
-	}
-	return res;
+    modal_scheduling = 1;
+    break;
+  case DETACH_MODAL_RESERVE:
+    res = detach_modal_reserve(call.args.reserveid);
+    break;
+  case DELETE_MODAL_RESERVE:
+    res = delete_modal_reserve(call.args.reserveid);
+    break;
+  case CREATE_SYS_TRANSITION:
+    res = create_sys_mode_transition();
+    break;
+  case ADD_TRANSITION_TO_SYS_TRANSITION:
+    res = add_transition_to_sys_transition(call.args.trans_to_sys_trans_params.sys_transition_id,
+					   call.args.trans_to_sys_trans_params.mrid,
+					   call.args.trans_to_sys_trans_params.transition_id);
+    break;
+  case DELETE_SYS_TRANSITION:
+    res = delete_sys_mode_transition(call.args.reserveid);
+    break;
+  case MODE_SWITCH:
+    request_mode_change_ts_ns = ticks2nanos(rdtsc());
+    sys_mode_transition(call.args.mode_switch_params.transition_id);
+    mode_change_signals_sent_ts_ns=ticks2nanos(rdtsc());
+    mode_change_signals_sent_ts_ns -= request_mode_change_ts_ns;
+#ifdef __ARMCORE__
+    mode_change_latency_ns_avg = mode_change_latency_ns_avg + mode_change_signals_sent_ts_ns;
+    do_div(mode_change_latency_ns_avg,2);
+#else
+    mode_change_latency_ns_avg = (mode_change_latency_ns_avg + 
+				  mode_change_signals_sent_ts_ns) / 2;
+#endif
+    if (mode_change_signals_sent_ts_ns > mode_change_latency_ns_worst)
+      mode_change_latency_ns_worst = mode_change_signals_sent_ts_ns;
+    
+    need_reschedule = 1;
+    break;
+  case ATTACH_RESERVE:
+    res = attach_reserve(call.args.attach_params.reserveid, 
+			 call.args.attach_params.pid);
+    break;
+  case DETACH_RESERVE:
+    res = detach_reserve(call.args.reserveid);
+    break;
+  case DELETE_RESERVE:
+    res = delete_reserve(call.args.reserveid);
+    break;
+  case MODAL_WAIT_NEXT_PERIOD:
+    res = modal_wait_for_next_period(call.args.reserveid);
+    need_reschedule = 1;
+    break;
+  case WAIT_NEXT_PERIOD:
+    res = wait_for_next_period(call.args.reserveid);
+    need_reschedule = 1;
+    break;
+  case RAISE_PRIORITY_CRITICALITY:
+    {
+      int rsvid = pid2reserve(current->pid);
+      if (rsvid != -1){
+	res = raise_priority_criticality(rsvid,
+					 call.args.raise_priority_criticality_params.priority_ceiling,
+					 call.args.raise_priority_criticality_params.criticality_ceiling);
+	need_reschedule = 1;
+      } else {
+	res = -1;
+      }
+      break;
+    }
+  case RESTORE_BASE_PRIORITY_CRITICALITY:
+    {
+      int rsvid = pid2reserve(current->pid);
+      if (rsvid != -1){
+	res = restore_base_priority_criticality(rsvid);
+	need_reschedule = 1;
+      } else {
+	res = -1;
+      }
+      break;
+    }
+  case GET_JIFFIES_MS:
+    res = get_jiffies_ms();
+    break;
+  case PRINT_STATS:
+    res=print_stats();
+    break;
+  default: /* illegal api identifier. */
+    res = -1;
+    printk(KERN_WARNING "MZSRMM: illegal API identifier.\n");
+    break;
+  }
+
+  // enable interrupts
+  spin_unlock_irqrestore(&zsrmlock,flags);
+
+  // allow other syscalls
+  up(&zsrmsem);
+
+  if (need_reschedule){
+    schedule();
+  }
+  return res;
 }
 
 // dummy
-#if LINUX_KERNEL_MINOR_VERSION >= 37 /* we don't believe LINUX_VERSION_CODE */
+//#if LINUX_KERNEL_MINOR_VERSION >= 37 /* we don't believe LINUX_VERSION_CODE */
 static long zsrm_ioctl(struct file *file,
-					   unsigned int cmd, 
-					   unsigned long arg)
-#else
+		       unsigned int cmd, 
+		       unsigned long arg)
+/*#else
 static int zsrm_ioctl(struct inode *inode,
-					   struct file *file,
-					   unsigned int cmd, 
-					   unsigned long arg)
+struct file *file,
+unsigned int cmd, 
+unsigned long arg)
 #endif
+*/
 {
 	return 0;
 }
@@ -1616,80 +1885,214 @@ static struct file_operations zsrm_fops;
 };
 */
 
+static void
+zsrm_cleanup_module(){
+
+  if (dev_class){
+    device_destroy(dev_class, MKDEV(dev_major, 0));
+  }
+  /* delete the char device. */
+  cdev_del(&c_dev);
+
+  if (dev_class)
+    class_destroy(dev_class);
+  /* return back the device number. */
+  unregister_chrdev_region(dev_id, 1);	
+}
+
 static int __init zsrm_init(void)
 {
-	int ret;
-	struct sched_param p;
+  int ret;
+  int err = 0;
+  dev_t devno;
+  struct device *device = NULL;
+  struct sched_param p;
+  
+  modal_scheduling = 0 ;
+  
+  // initialize scheduling top
+  top = -1;
 
-	modal_scheduling = 0 ;
+  // initialize semaphore
+  sema_init(&zsrmsem,1); // binary - initially unlocked
 
 #ifdef __ARMCORE__
-	start_tsc();
+  start_tsc();
 #endif
+  
+  init();
+  printk(KERN_INFO "MZSRMM: HELLO!\n");
+  
+  calibrate_ticks();
+  
+  test_ticks();
+  
+  /* get the device number of a char device. */
+  ret = alloc_chrdev_region(&dev_id, 0, 1, DEVICE_NAME);
+  if (ret < 0) {
+    printk(KERN_WARNING "MZSRMM: failed to allocate device.\n");
+    return ret;
+  }
+  
+  dev_major = MAJOR(dev_id);
+  
+  dev_class = class_create(THIS_MODULE,DEVICE_NAME);
+  if (IS_ERR(dev_class)){
+    printk(KERN_WARNING "ZSRMM: failed to create device class.\n");
+    err = PTR_ERR(dev_class);
+    dev_class = NULL;
+    zsrm_cleanup_module();
+    return err;
+  }
+  
+  devno = MKDEV(dev_major, 0);
+  
+  // initialize the fops 
+  zsrm_fops.owner = THIS_MODULE;
+  zsrm_fops.open = zsrm_open;
+  zsrm_fops.release = zsrm_release;
+  zsrm_fops.read = NULL;
+  zsrm_fops.write = zsrm_write;
+  
+  //#if LINUX_KERNEL_MINOR_VERSION < 37
+  //zsrm_fops.ioctl = zsrm_ioctl;
+  //#else
+  zsrm_fops.unlocked_ioctl = zsrm_ioctl;
+  //#endif
+  
+  /* initialize the char device. */
+  cdev_init(&c_dev, &zsrm_fops);
+  
+  /* register the char device. */
+  ret = cdev_add(&c_dev, dev_id, 1);
+  if (ret < 0) {
+    printk(KERN_WARNING "ZSRMM: failed to register device.\n");
+    return ret;
+  }
+  
+  device = device_create(dev_class, NULL, devno, NULL, DEVICE_NAME "%d", 0);
+  
+  if (IS_ERR(device)){
+    err = PTR_ERR(device);
+    printk(KERN_WARNING "Error %d while trying to create dev %s%d", err, DEVICE_NAME,0);
+    cdev_del(&c_dev);
+    return err;
+  }
+  
+  sched_task = kthread_create((void *)scheduler_task, NULL, "ZSRMM scheduler thread");
+  
+  p.sched_priority = 50;
+  sched_setscheduler(sched_task, SCHED_FIFO, &p);
+  kthread_bind(sched_task, 0);
+  printk(KERN_WARNING "MZSRMM: nanos per ten ticks: %lu \n",nanosPerTenTicks);
+  printk(KERN_WARNING "MZSRMM: ready!\n");
+    
+  return 0;
+}
 
-	init();
-	printk(KERN_INFO "MZSRMM: HELLO!\n");
+void test_accounting(void){
 
-	calibrate_ticks();
+  int rsvid1 = 0;
+  int rsvid2 = 1;
+  int rsvid3 = 2;
 
-	test_ticks();
+  // simulate tasks 
+  // T1=100 ms, C1= 50
+  // T2=200 ms, C2 = 50
+  // T3=400 ms, C3 = 50
 
-	/* get the device number of a char device. */
-	ret = alloc_chrdev_region(&dev_id, 0, 1, "mzsrmm");
-	if (ret < 0) {
-		printk(KERN_WARNING "MZSRMM: failed to allocate device.\n");
-		return ret;
-	}
+  unsigned long waituntil;
+  unsigned long jiffies10ms = HZ /100;
+  unsigned long jiffies50ms = (HZ *5) / 100;
+  unsigned long jiffies100ms = HZ / 10;
+  unsigned long jiffies200ms = (HZ * 2) / 10;
+  unsigned long jiffies400ms = (HZ * 4) /10;
+  unsigned long t1nextarrival;
+  unsigned long t2nextarrival;
+  unsigned long t3nextarrival;
 
-	// initialize the fops 
-	zsrm_fops.owner = THIS_MODULE;
-	zsrm_fops.open = zsrm_open;
-	zsrm_fops.release = zsrm_release;
-	zsrm_fops.read = NULL;
-	zsrm_fops.write = zsrm_write;
-#if LINUX_KERNEL_MINOR_VERSION >=37
-	zsrm_fops.unlocked_ioctl = zsrm_ioctl;
-#else
-	zsrm_fops.ioctl = zsrm_ioctl;
-#endif
-	/* initialize the char device. */
-	cdev_init(&c_dev, &zsrm_fops);
+  reserve_table[rsvid1].job_executing_nanos = 0L;
+  reserve_table[rsvid2].job_executing_nanos = 0L;
+  reserve_table[rsvid3].job_executing_nanos = 0L;
 
-	/* register the char device. */
-	ret = cdev_add(&c_dev, dev_id, 1);
-	if (ret < 0) {
-		printk(KERN_WARNING "MZSRMM: failed to register device.\n");
-		return ret;
-	}
+  reserve_table[rsvid1].params.priority=10;
+  reserve_table[rsvid2].params.priority=9;
+  reserve_table[rsvid3].params.priority=8;
+  
+  printk("zsrm.test_acct: HZ(%d)\n",HZ);
+  printk("zsrm.test_acct: jiffiesx1(%lu)\n",jiffies10ms);
+  printk("zsrm.test_acct: jiffiesx5(%lu)\n",jiffies50ms);
+  printk("zsrm.test_acct: jiffiesx10(%lu)\n",jiffies100ms);
+  printk("zsrm.test_acct: jiffiesx20(%lu)\n",jiffies200ms);
+  printk("zsrm.test_acct: jiffiesx40(%lu)\n",jiffies400ms);
 
-	sched_task = kthread_create((void *)scheduler_task, NULL, "MZSRMM scheduler thread");
+  // arrival of t3
+  start_accounting(&reserve_table[rsvid3]);
+  waituntil = jiffies + jiffies10ms;
+  t3nextarrival = jiffies+jiffies400ms;
+  while (time_before(jiffies, waituntil))
+    ;
 
-	p.sched_priority = 50;
-	sched_setscheduler(sched_task, SCHED_FIFO, &p);
-	kthread_bind(sched_task, 0);
-	printk(KERN_WARNING "MZSRMM: nanos per ten ticks: %lu \n",nanosPerTenTicks);
-	printk(KERN_WARNING "MZSRMM: ready!\n");
+  //arrival of t2
+  start_accounting(&reserve_table[rsvid2]);
+  printk("zsrm: t3 c: %lld\n",reserve_table[rsvid3].job_executing_nanos);
+  waituntil = jiffies + jiffies10ms;
+  t2nextarrival = jiffies+jiffies200ms;
+  while (time_before(jiffies, waituntil))
+    ;
 
-	return 0;
+  //arrival of t1
+  start_accounting(&reserve_table[rsvid1]);
+  printk("zsrm: t2 c: %lld\n",reserve_table[rsvid2].job_executing_nanos);
+  waituntil = jiffies + jiffies50ms;
+  t1nextarrival = jiffies+jiffies100ms;
+  while (time_before(jiffies, waituntil))
+    ;
+
+  stop_accounting(&reserve_table[rsvid1],1);
+  printk("zsrm: t1 c: %lld\n",reserve_table[rsvid1].job_executing_nanos);
+  reserve_table[rsvid1].job_executing_nanos = 0L;
+
+  waituntil = jiffies + (jiffies10ms *4);
+  while(time_before(jiffies,waituntil))
+    ;
+
+  stop_accounting(&reserve_table[rsvid2],1);
+  printk("zsrm: t2 c: %lld\n",reserve_table[rsvid2].job_executing_nanos);
+  printk("zsrm: t3 c: %lld\n",reserve_table[rsvid3].job_executing_nanos);
+  reserve_table[rsvid2].job_executing_nanos = 0L;
+  waituntil = jiffies+(jiffies10ms * 1);
+  while(time_before(jiffies,waituntil))
+    ;
+  
+  // next t1 arrival
+  start_accounting(&reserve_table[rsvid1]);
+  printk("zsrm: t3 c: %lld\n",reserve_table[rsvid3].job_executing_nanos);
+  waituntil = jiffies+ jiffies50ms;
+  while(time_before(jiffies,waituntil))
+    ;
+
+  stop_accounting(&reserve_table[rsvid1],1);
+  printk("zsrm: t1 c: %lld\n",reserve_table[rsvid1].job_executing_nanos);
+  printk("zsrm: t2 c: %lld\n",reserve_table[rsvid2].job_executing_nanos);
+  printk("zsrm: t3 c: %lld\n",reserve_table[rsvid3].job_executing_nanos);
+
 }
 
 static void __exit zsrm_exit(void)
 {
-	if (timer_started)
-		hrtimer_cancel(&ht);
-
-	delete_all_reserves();
-
-	delete_all_modal_reserves();
-
-	printk(KERN_INFO "MZSRMM: GOODBYE!\n");
-
-	/* delete the char device. */
-	cdev_del(&c_dev);
-	/* return back the device number. */
-	unregister_chrdev_region(dev_id, 1);
-	
-	kthread_stop(sched_task);
+  if (timer_started)
+    hrtimer_cancel(&ht);
+  
+  delete_all_reserves();
+  
+  delete_all_modal_reserves();
+  
+  printk(KERN_INFO "MZSRMM: GOODBYE!\n");
+  
+  zsrm_cleanup_module();
+  
+  kthread_stop(sched_task);
 }
 
 module_init(zsrm_init);

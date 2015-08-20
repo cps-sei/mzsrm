@@ -39,14 +39,16 @@ Carnegie Mellon® is registered in the U.S. Patent and Trademark Office by Carne
 DM-0000891
 */
 
+#ifndef __ZSRM_H__
+#define __ZSRM_H__
+
+
 #ifdef __KERNEL__
 #include <linux/time.h>
 #else
 #include <sys/time.h>
 #endif
 
-#ifndef __ZSRM_H__
-#define __ZSRM_H__
 
 #define DAEMON_PRIORITY 50;
 // calls
@@ -70,6 +72,22 @@ DM-0000891
 #define DELETE_SYS_TRANSITION 17
 #define SET_INITIAL_MODE_MODAL_RESERVE 18
 #define PRINT_STATS 19
+
+// execution status
+// a reserve can be in the following combined status:
+// 
+// EXEC_WAITING_NEXT_PERIOD & EXEC_ENFORCED_PAUSED
+// EXEC_WAITING_NEXT_PERIOD & EXEC_ENFORCED_DROPPED
+// EXEC_RUNNING & EXEC_ENFORCED_PAUSED
+//
+// EXEC_RUNNING & EXEC_ENFORCED_DROPPED does not exist because
+// a dropped job resumes as EXEC_WAITING_NEXT_PERIOD
+//
+#define EXEC_BEFORE_START 0
+#define EXEC_WAIT_NEXT_PERIOD 1
+#define EXEC_RUNNING 2
+#define EXEC_ENFORCED_PAUSED 4
+#define EXEC_ENFORCED_DROPPED 8
 
 #define WAIT_NEXT_PERIOD 20
 
@@ -116,21 +134,22 @@ DM-0000891
 #define GET_EFFECTIVE_UTILITY(i) (reserve_table[i].current_degraded_mode == -1 ? reserve_table[i].params.overloaded_marginal_utility: reserve_table[i].params.degraded_marginal_utility[reserve_table[i].current_degraded_mode][1])
 
 struct zs_reserve_params{
-	struct timespec period;
-	struct timespec execution_time;
-	struct timespec zs_instant;
-	struct timespec response_time_instant;
-	long normal_marginal_utility;
-	long overloaded_marginal_utility;
-	int num_degraded_modes;
-	int critical_util_degraded_mode;
-	int enforcement_mask;
-	int criticality;
-	int priority;
-	long degraded_marginal_utility[MAX_DEGRADED_MODES][2];
-	struct timespec degraded_period[MAX_DEGRADED_MODES];
-	int degraded_priority[MAX_DEGRADED_MODES];
-        int reserve_type;
+  struct timespec period;
+  struct timespec execution_time;
+  struct timespec overload_execution_time;
+  struct timespec zs_instant;
+  struct timespec response_time_instant;
+  long normal_marginal_utility;
+  long overloaded_marginal_utility;
+  int num_degraded_modes;
+  int critical_util_degraded_mode;
+  int enforcement_mask;
+  int criticality;
+  int priority;
+  long degraded_marginal_utility[MAX_DEGRADED_MODES][2];
+  struct timespec degraded_period[MAX_DEGRADED_MODES];
+  int degraded_priority[MAX_DEGRADED_MODES];
+  int reserve_type;
 };
 
 struct zs_mode_transition{
@@ -148,23 +167,31 @@ struct zs_modal_transition_entry{
 #ifdef __KERNEL__
 
 struct zs_reserve {
-	int pid;
-        int parent_modal_reserve_id;
-	int effective_priority;
-	int request_stop;
-	struct hrtimer period_timer;
-	struct hrtimer zs_timer;
-	struct hrtimer response_time_timer;
-	int in_critical_mode;
-	int critical_utility_mode_enforced;
-	int current_degraded_mode;
-	int just_returned_from_degradation;
-	struct zs_reserve_params params;
-	struct timespec start_of_period;
-        // Vars for PCCP -- not compatible with
-        // modal reserves!!
-        int base_priority;
-        int base_criticality;
+  int rid;
+  int pid;
+  int parent_modal_reserve_id;
+  int effective_priority;
+  int request_stop;
+  struct hrtimer period_timer;
+  struct hrtimer zs_timer;
+  struct hrtimer response_time_timer;
+  int in_critical_mode;
+  int critical_utility_mode_enforced;
+  int current_degraded_mode;
+  int just_returned_from_degradation;
+  struct zs_reserve_params params;
+  struct timespec start_of_period;
+  // Vars for PCCP -- not compatible with
+  // modal reserves!!
+  int base_priority;
+  int base_criticality;
+  int execution_status;
+  unsigned long long nominal_exectime_nanos;
+  unsigned long long overload_exectime_nanos;
+  unsigned long long job_executing_nanos;
+  unsigned long long job_resumed_timestamp_nanos;
+  struct zs_reserve *next_lower_priority;
+  struct zs_reserve *next_paused_lower_criticality;
 };
 
 struct zs_modal_reserve{
@@ -180,6 +207,57 @@ struct zs_modal_reserve{
   int num_transitions;
   struct zs_mode_transition transitions[MAX_TRANSITIONS];
 };
+
+struct task_struct *gettask(int pid);
+enum hrtimer_restart zs_instant_handler(struct hrtimer *timer);
+enum hrtimer_restart period_handler(struct hrtimer *timer);
+int attach_reserve(int rid, int pid);
+int find_empty_entry(void);
+int wait_for_next_period(int rid);
+int modal_wait_for_next_period(int mrid);
+int delete_reserve(int rid);
+int detach_reserve(int rid);
+void init(void);
+int create_reserve(int rid);
+void period_degradation(int rid);
+void try_resume_normal_period(int rid);
+int init_sys_mode_transitions(void);
+int create_sys_mode_transition(void);
+int delete_sys_mode_transition(int stid);
+int add_transition_to_sys_transition(int stid, int mrid, int mtid);
+int sys_mode_transition(int stid);
+int mode_transition(int mrid, int tid);
+int create_modal_reserve(int);
+int delete_modal_reserve(int mrid);
+int detach_modal_reserve(int mrid);
+int attach_reserve_transitional(int rid, int pid, struct timespec *trans_zs_instant);
+int print_stats(void);
+unsigned long long ticks2nanos(unsigned long long ticks);
+void test_ticks(void);
+unsigned long long timestamp_ns(void);
+void calibrate_ticks(void);
+static inline unsigned long long rdtsc(void);
+int raise_priority_criticality(int rid, int priority_ceiling, int criticality_ceiling);
+int restore_base_priority_criticality(int rid);
+static void zsrm_cleanup_module(void);
+
+#define UPDATE_HIGHEST_PRIORITY_TASK 1
+#define DONT_UPDATE_HIGHEST_PRIORITY_TASK 0
+
+void stop_accounting(struct zs_reserve *rsv, int update_highest_priority);
+void start_accounting(struct zs_reserve *rsv);
+
+void test_accounting(void);
+
+void add_paused_reserve(struct zs_reserve *rsv);
+void del_paused_reserve(struct zs_reserve *rsv);
+void kill_paused_reserves(int criticality);
+void resume_paused_reserves(int criticality);
+void kill_reserve(struct zs_reserve *rsv);
+void pause_reserve(struct zs_reserve *rsv);
+void resume_reserve(struct zs_reserve *rsv);
+int push_to_reschedule(int i);
+int pop_to_reschedule(void);
 
 #endif
 

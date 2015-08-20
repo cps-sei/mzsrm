@@ -1,0 +1,4 @@
+added code to create the /dev/zsrmm0 file
+-- need to find a way to assign 0666 permissions by default
+-- crashes when only creates a reserve and quits:
+	-- seems to be related to trying to detach task / delete reserve

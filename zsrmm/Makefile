@@ -37,8 +37,8 @@
 #
 #DM-0000891
 
-TARGET = mzsrmm
-OBJS = main.o
+TARGET = zsrmm
+OBJS =  main.o
 UNAME_P := $(shell uname -p)
 
 #INCDIR = ../include/

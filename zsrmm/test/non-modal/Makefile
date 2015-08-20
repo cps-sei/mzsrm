@@ -54,5 +54,5 @@ all: $(PROGS)
 	$(CC) -o $@ $< $(CFLAGS)
 
 clean:
-	rm *.o $(PROGS)
+	rm *.o *~ *.txt *.pdf $(PROGS)
 

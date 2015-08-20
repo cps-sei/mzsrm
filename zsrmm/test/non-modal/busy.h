@@ -88,7 +88,7 @@ return retnow;
 
 
 // at frequency: 1500000  old:247500
-#define IN_LOOP_ONE_MS 213787
+#define IN_LOOP_ONE_MS 213788
 #define NUM_IN_LOOPS_ONE_MS 1
 
 void  busy(long millis){

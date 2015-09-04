@@ -94,6 +94,8 @@ DM-0000891
 #define RAISE_PRIORITY_CRITICALITY 21
 #define RESTORE_BASE_PRIORITY_CRITICALITY 22
 
+#define WAIT_NEXT_ARRIVAL 23
+
 #define TIMER_ZS  1
 #define TIMER_ENF 2
 #define TIMER_ZS_ENF 3
@@ -125,9 +127,20 @@ DM-0000891
 
 #define DISABLED_MODE -1
 
+
+/* RESERVE TYPE DEFINITIONS
+ * Types of reserves. Can be Utility / Criticality with
+ * periodic or aperiodic arrival
+ * The reserve type combines these types
+ */
 // Types of reserves
 #define CRITICALITY_RESERVE 0
-#define UTILITY_RESERVE 1
+#define UTILITY_RESERVE 2
+// Arrival type
+#define APERIODIC_ARRIVAL 4 // bit == 0 => periodic
+
+/* END OF RESERVE TYPE DEFINITIONS
+ */
 
 #define TIMESPEC2NS(ts) (((unsigned long long) (ts)->tv_sec) * 1000000000ll + (unsigned long long) (ts)->tv_nsec)
 
@@ -298,6 +311,11 @@ struct raise_priority_criticality_api{
   int criticality_ceiling;
 };
 
+struct wait_next_arrival_api{
+  int reserveid;
+  int wfd;
+};
+
 struct api_call{
   int api_id;
   union {
@@ -311,6 +329,7 @@ struct api_call{
     struct add_transition_to_sys_transition_api trans_to_sys_trans_params;
     struct set_initial_mode_modal_reserve_api set_initial_mode_params;
     struct raise_priority_criticality_api raise_priority_criticality_params;
+    struct wait_next_arrival_api wait_next_arrival_params;
   }args;
 };
 
@@ -332,6 +351,7 @@ int zs_detach_reserve(int fd, int rid);
 int zs_delete_reserve(int fd, int rid);
 int zs_modal_wait_next_period(int fd, int mrid);
 int zs_wait_next_period(int fd, int rid);
+int zs_wait_next_arrival(int fd, int rid, int wfd);
 int zs_get_jiffies_ms(int fd);
 int zs_add_reserve_to_mode(int fid, int mrid, int mode, int rid);
 int zs_print_stats(int fd);

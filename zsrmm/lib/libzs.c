@@ -150,6 +150,19 @@ int zs_wait_next_period(int fd, int rid){
 	return ret;
 }
 
+int zs_wait_next_arrival(int fd, int rid, int wfd){
+  struct api_call call;
+  int ret;
+
+  call.api_id = WAIT_NEXT_ARRIVAL;
+  call.args.wait_next_arrival_params.reserveid = rid;
+  call.args.wait_next_arrival_params.wfd = wfd;
+  while ((ret = write(fd, &call, sizeof(call))) == -1 && errno == EINTR)
+    ;
+
+  return ret;
+}
+
 int zs_set_initial_mode_modal_reserve(int fid, int modal_reserve_id, int mode_id){
   struct api_call call;
   int ret;

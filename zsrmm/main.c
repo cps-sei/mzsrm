@@ -49,6 +49,8 @@ DM-0000891
 #include <linux/device.h>
 #include <linux/version.h>
 #include <linux/fs.h>
+#include <linux/poll.h>
+#include <linux/fdtable.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/init.h>
@@ -1170,11 +1172,14 @@ int attach_reserve_transitional(int rid, int pid, struct timespec *trans_zs_inst
 	p.sched_priority = reserve_table[rid].params.priority;
 	sched_setscheduler(task,SCHED_FIFO, &p);
 
-	kperiod = ktime_set(reserve_table[rid].params.period.tv_sec, 
-			reserve_table[rid].params.period.tv_nsec);
-	hrtimer_init(&reserve_table[rid].period_timer,CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	reserve_table[rid].period_timer.function = period_handler;
-	hrtimer_start(&reserve_table[rid].period_timer, kperiod, HRTIMER_MODE_REL);
+	// if NOT APERIODIC  arrival then it is periodic. Start periodic timer
+	if (!(reserve_table[rid].params.reserve_type & APERIODIC_ARRIVAL)){
+	  kperiod = ktime_set(reserve_table[rid].params.period.tv_sec, 
+			      reserve_table[rid].params.period.tv_nsec);
+	  hrtimer_init(&reserve_table[rid].period_timer,CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	  reserve_table[rid].period_timer.function = period_handler;
+	  hrtimer_start(&reserve_table[rid].period_timer, kperiod, HRTIMER_MODE_REL);
+	}
 
 	if (trans_zs_instant != NULL){
 	  kzs = ktime_set(trans_zs_instant->tv_sec,
@@ -1310,12 +1315,14 @@ void try_resume_normal_period(int rid){
 		jiffy_ns = div_u64(1000000000ll,HZ);
 		// greater than a jiffy?
 		if (newperiod_ns > jiffy_ns){
+		  if (!(reserve_table[rid].params.reserve_type & APERIODIC_ARRIVAL)){
 			hrtimer_cancel(&(reserve_table[rid].period_timer));
 			secs = div_u64_rem(newperiod_ns, 1000000000L, &ns_reminder);
 			kperiod = ktime_set(secs, ns_reminder);
 			hrtimer_init(&(reserve_table[rid].period_timer),CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 			reserve_table[rid].period_timer.function = period_handler;
 			hrtimer_start(&(reserve_table[rid].period_timer), kperiod, HRTIMER_MODE_REL);
+		  }
 		}
 	}
 }
@@ -1340,13 +1347,15 @@ void extend_period_timer(int rid, struct timespec *p){
 	if (newperiod_ns > zs_elapsed_ns){
 		newperiod_ns = newperiod_ns - zs_elapsed_ns;
 
-		hrtimer_cancel(&(reserve_table[rid].period_timer));
+		if (!(reserve_table[rid].params.reserve_type & APERIODIC_ARRIVAL)){
+		  hrtimer_cancel(&(reserve_table[rid].period_timer));
 
-		secs = div_u64_rem(newperiod_ns, 1000000000L, &ns_reminder);
-		kperiod = ktime_set(secs, ns_reminder);
-		hrtimer_init(&(reserve_table[rid].period_timer),CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-		reserve_table[rid].period_timer.function = period_handler;
-		hrtimer_start(&(reserve_table[rid].period_timer), kperiod, HRTIMER_MODE_REL);
+		  secs = div_u64_rem(newperiod_ns, 1000000000L, &ns_reminder);
+		  kperiod = ktime_set(secs, ns_reminder);
+		  hrtimer_init(&(reserve_table[rid].period_timer),CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+		  reserve_table[rid].period_timer.function = period_handler;
+		  hrtimer_start(&(reserve_table[rid].period_timer), kperiod, HRTIMER_MODE_REL);
+		}
 	}
 }
 
@@ -1486,10 +1495,69 @@ int wait_for_next_period(int rid){
   return 0;
 }
 
+// called with zsrm_lock locked and will release it inside in order to block
+int wait_for_next_arrival(int rid, int  wfd, unsigned long *flags){
+
+  int retval = 0;
+  struct file *file;
+  struct poll_wqueues table;
+  poll_table *wait;
+
+  /* Disable the end-of-period processing in order to test polling
+
+  hrtimer_cancel(&(reserve_table[rid].zs_timer));
+  if (reserve_table[rid].params.enforcement_mask & ZS_RESPONSE_TIME_ENFORCEMENT_MASK){
+    hrtimer_cancel(&(reserve_table[rid].response_time_timer));
+  }
+
+  stop_accounting(&reserve_table[rid],UPDATE_HIGHEST_PRIORITY_TASK);
+
+  if (reserve_table[rid].in_critical_mode){
+    finish_period_degradation(rid);
+  }
+  if (reserve_table[rid].just_returned_from_degradation){
+    reserve_table[rid].just_returned_from_degradation = 0;
+    // Dio: it seems that this is unstable.
+    //try_resume_normal_period(rid);
+  }
+
+
+  // reset the job_executing_nanos
+  reserve_table[rid].job_executing_nanos=0L;
+
+  reserve_table[rid].execution_status |= EXEC_WAIT_NEXT_PERIOD;
+  */
+
+  // prepare poll parameters
+  poll_initwait(&table);
+  wait = &table.pt;
+  rcu_read_lock();
+  file = fcheck_files(current->files, wfd);
+  if (file == NULL) {
+    rcu_read_unlock();
+    retval =  -ENOENT;
+  } else {
+    rcu_read_unlock();
+
+    // release zsrm locks
+    spin_unlock_irqrestore(&zsrmlock, *flags);
+    up(&zsrmsem);
+
+    (*file->f_op->poll)(file,wait);
+
+    // reacquire zsrm locks
+    down(&zsrmsem);
+    spin_lock_irqsave(&zsrmlock, *flags);
+  }
+  poll_freewait(&table);
+    
+  return retval;
+}
+
 int delete_reserve(int rid){
-	if (reserve_table[rid].pid != -1){
-		detach_reserve(rid);
-	}
+  if (reserve_table[rid].pid != -1){
+    detach_reserve(rid);
+  }
 	reserve_table[rid].params.priority = -1;
 	reserve_table[rid].execution_status = EXEC_BEFORE_START;
 	return 0;
@@ -1538,7 +1606,8 @@ int detach_reserve(int rid){
 	}
 
 	hrtimer_cancel(&(reserve_table[rid].zs_timer));
-	hrtimer_cancel(&(reserve_table[rid].period_timer));
+	if (!(reserve_table[rid].params.reserve_type & APERIODIC_ARRIVAL))
+	  hrtimer_cancel(&(reserve_table[rid].period_timer));
 	if (reserve_table[rid].params.enforcement_mask & ZS_RESPONSE_TIME_ENFORCEMENT_MASK){
 		hrtimer_cancel(&(reserve_table[rid].response_time_timer));
 	}
@@ -1717,7 +1786,7 @@ static ssize_t zsrm_write
       reserve_table[i].overload_exectime_nanos = 
 	reserve_table[i].params.overload_execution_time.tv_sec * 1000000000L +
 	reserve_table[i].params.overload_execution_time.tv_nsec;
-      if (reserve_table[i].params.reserve_type == CRITICALITY_RESERVE){
+      if (reserve_table[i].params.reserve_type & CRITICALITY_RESERVE){
 	reserve_table[i].params.normal_marginal_utility = reserve_table[i].params.criticality;
 	reserve_table[i].params.overloaded_marginal_utility = reserve_table[i].params.criticality;
 	reserve_table[i].params.critical_util_degraded_mode = -1;
@@ -1804,6 +1873,11 @@ static ssize_t zsrm_write
   case WAIT_NEXT_PERIOD:
     res = wait_for_next_period(call.args.reserveid);
     need_reschedule = 1;
+    break;
+  case WAIT_NEXT_ARRIVAL:
+    res = wait_for_next_arrival(call.args.wait_next_arrival_params.reserveid, call.args.wait_next_arrival_params.wfd, &flags);
+    // this call will block internally triggering the reschedule -- hopefully
+    need_reschedule = 0;
     break;
   case RAISE_PRIORITY_CRITICALITY:
     {

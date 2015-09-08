@@ -40,6 +40,7 @@ Carnegie Mellon® is registered in the U.S. Patent and Trademark Office by Carne
 DM-0000891
 */
 
+#include <poll.h>
 #include <stdio.h>
 #include <locale.h>
 #include <time.h>
@@ -54,24 +55,28 @@ int main(){
   unsigned long long now_ns;
   unsigned long long start_ns;
   char str[100];
+  struct pollfd fds[1];
 
   setlocale(LC_NUMERIC,"");
 
-  cpuattr.period.tv_sec = 1;//0;
+  cpuattr.period.tv_sec = 5;//0;
   cpuattr.period.tv_nsec=0;//100000000;
   cpuattr.criticality = 0;
   cpuattr.priority = 10;
-  cpuattr.zs_instant.tv_sec=1;
+  cpuattr.zs_instant.tv_sec=5;
   cpuattr.zs_instant.tv_nsec=0;
-  cpuattr.response_time_instant.tv_sec = 1;
+  cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
   cpuattr.critical_util_degraded_mode=-1;
   cpuattr.normal_marginal_utility=7;
   cpuattr.overloaded_marginal_utility=7;
   cpuattr.num_degraded_modes=0;
   cpuattr.enforcement_mask=0;
-  cpuattr.reserve_type = CRITICALITY_RESERVE & APERIODIC_ARRIVAL;
+  cpuattr.reserve_type = CRITICALITY_RESERVE | APERIODIC_ARRIVAL;
   
+
+  printf("Reserve type: %x\n",cpuattr.reserve_type);
+
   if ((sched = zs_open_sched()) == -1){
     printf("error opening the scheduler\n");
     return -1;
@@ -79,13 +84,17 @@ int main(){
 
   rid = zs_create_reserve(sched,&cpuattr);
   zs_attach_reserve(sched,rid,getpid());
+  fds[0].fd = fileno(stdin);
+  fds[0].events = POLLRDNORM;
 
   for (i=0;i<10;i++){
     clock_gettime(CLOCK_REALTIME,&now);
     now_ns = TIMESPEC2NS(&now);
     printf("job arrival at %'lld ns\n",now_ns);
-    zs_wait_next_arrival(sched,rid, fileno(stdin));
+    zs_wait_next_arrival(sched,rid, fds, 1);
+    printf("after next arrival\n");
     fgets(str,100,stdin);
+    printf("received %s\n",str);
   }
 
   zs_detach_reserve(sched,rid);

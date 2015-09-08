@@ -39,6 +39,7 @@ Carnegie Mellon® is registered in the U.S. Patent and Trademark Office by Carne
 DM-0000891
 */
 
+#include <linux/unistd.h>
 #include <linux/math64.h>
 #include <asm/current.h>
 #include <asm/uaccess.h>
@@ -63,8 +64,14 @@ DM-0000891
 #include <asm/siginfo.h>
 #include <linux/semaphore.h>
 #include <linux/signal.h>
+#include <linux/syscalls.h>
+#include <linux/kallsyms.h>
 //#include "accounting.h"
 #include "zsrm.h"
+
+
+int (*do_sys_pollp)(struct pollfd __user *ufds, unsigned int nfds,
+				struct timespec *end_time);
 
 MODULE_AUTHOR("Dionisio de Niz");
 MODULE_LICENSE("GPL");
@@ -1174,6 +1181,7 @@ int attach_reserve_transitional(int rid, int pid, struct timespec *trans_zs_inst
 
 	// if NOT APERIODIC  arrival then it is periodic. Start periodic timer
 	if (!(reserve_table[rid].params.reserve_type & APERIODIC_ARRIVAL)){
+	  printk("zsrmm: attach_reserve. Programming periodic timer reserve_type(%x)\n",reserve_table[rid].params.reserve_type);
 	  kperiod = ktime_set(reserve_table[rid].params.period.tv_sec, 
 			      reserve_table[rid].params.period.tv_nsec);
 	  hrtimer_init(&reserve_table[rid].period_timer,CLOCK_MONOTONIC, HRTIMER_MODE_REL);
@@ -1495,15 +1503,26 @@ int wait_for_next_period(int rid){
   return 0;
 }
 
+/**
+ * In some system calls we may need to change the memory upper limit 
+ * to access user memory with
+ *
+ * mm_segment_t fs;
+ * fs = get_fs();
+ * set_fs(get_ds());
+ *  // syscall
+ * set_fs(fs)
+ *
+ * However in this one the sys_poll already takes user pointer.
+ */
 // called with zsrm_lock locked and will release it inside in order to block
-int wait_for_next_arrival(int rid, int  wfd, unsigned long *flags){
-
+int wait_for_next_arrival(int rid, struct pollfd __user *fds, unsigned int nfds, unsigned long *flags){
   int retval = 0;
-  struct file *file;
-  struct poll_wqueues table;
-  poll_table *wait;
+  struct sched_param p;
+  unsigned long long now_ns;
+  ktime_t kzs;
 
-  /* Disable the end-of-period processing in order to test polling
+
 
   hrtimer_cancel(&(reserve_table[rid].zs_timer));
   if (reserve_table[rid].params.enforcement_mask & ZS_RESPONSE_TIME_ENFORCEMENT_MASK){
@@ -1526,31 +1545,38 @@ int wait_for_next_arrival(int rid, int  wfd, unsigned long *flags){
   reserve_table[rid].job_executing_nanos=0L;
 
   reserve_table[rid].execution_status |= EXEC_WAIT_NEXT_PERIOD;
-  */
 
-  // prepare poll parameters
-  poll_initwait(&table);
-  wait = &table.pt;
-  rcu_read_lock();
-  file = fcheck_files(current->files, wfd);
-  if (file == NULL) {
-    rcu_read_unlock();
-    retval =  -ENOENT;
-  } else {
-    rcu_read_unlock();
+  p.sched_priority = 50;
+  sched_setscheduler(current, SCHED_FIFO, &p);
 
-    // release zsrm locks
-    spin_unlock_irqrestore(&zsrmlock, *flags);
-    up(&zsrmsem);
 
-    (*file->f_op->poll)(file,wait);
+  // release zsrm locks
+  spin_unlock_irqrestore(&zsrmlock, *flags);
+  up(&zsrmsem);
+  
+  do_sys_pollp(fds, (unsigned int) 1, NULL);
 
-    // reacquire zsrm locks
-    down(&zsrmsem);
-    spin_lock_irqsave(&zsrmlock, *flags);
-  }
-  poll_freewait(&table);
-    
+  now_ns = ticks2nanos(rdtsc());
+
+  // reacquire zsrm locks
+  down(&zsrmsem);
+  spin_lock_irqsave(&zsrmlock, *flags);
+
+  kzs = ktime_set(reserve_table[rid].params.zs_instant.tv_sec, 
+		  reserve_table[rid].params.zs_instant.tv_nsec);
+
+  hrtimer_init(&(reserve_table[rid].zs_timer),CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+  reserve_table[rid].zs_timer.function = zs_instant_handler;
+  hrtimer_start(&(reserve_table[rid].zs_timer), kzs, HRTIMER_MODE_REL);
+	  
+  now2timespec(&reserve_table[rid].start_of_period);
+  record_latest_deadline(&(reserve_table[rid].params.period));
+
+  start_accounting(&reserve_table[rid]);
+  // get ready to return
+  p.sched_priority = reserve_table[rid].params.priority;
+  sched_setscheduler(current, SCHED_FIFO, &p);
+
   return retval;
 }
 
@@ -1786,7 +1812,7 @@ static ssize_t zsrm_write
       reserve_table[i].overload_exectime_nanos = 
 	reserve_table[i].params.overload_execution_time.tv_sec * 1000000000L +
 	reserve_table[i].params.overload_execution_time.tv_nsec;
-      if (reserve_table[i].params.reserve_type & CRITICALITY_RESERVE){
+      if ((reserve_table[i].params.reserve_type & RESERVE_TYPE_MASK) == CRITICALITY_RESERVE){
 	reserve_table[i].params.normal_marginal_utility = reserve_table[i].params.criticality;
 	reserve_table[i].params.overloaded_marginal_utility = reserve_table[i].params.criticality;
 	reserve_table[i].params.critical_util_degraded_mode = -1;
@@ -1875,7 +1901,10 @@ static ssize_t zsrm_write
     need_reschedule = 1;
     break;
   case WAIT_NEXT_ARRIVAL:
-    res = wait_for_next_arrival(call.args.wait_next_arrival_params.reserveid, call.args.wait_next_arrival_params.wfd, &flags);
+    res = wait_for_next_arrival(call.args.wait_next_arrival_params.reserveid, 
+				call.args.wait_next_arrival_params.fds, 
+				call.args.wait_next_arrival_params.nfds,
+				&flags);
     // this call will block internally triggering the reschedule -- hopefully
     need_reschedule = 0;
     break;
@@ -1986,6 +2015,18 @@ static int __init zsrm_init(void)
   
   // initialize scheduling top
   top = -1;
+
+
+  // get do_sys_poll pointer
+
+  do_sys_pollp = (int (*)(struct pollfd __user *ufds, unsigned int nfds,
+			  struct timespec *end_time))
+    kallsyms_lookup_name("do_sys_poll");
+
+  if (((unsigned long)do_sys_pollp) == 0){
+    printk("zsrmm: Failed to obtain do_sys_poll pointer\n");
+    return -1;
+  }
 
   // initialize semaphore
   sema_init(&zsrmsem,1); // binary - initially unlocked

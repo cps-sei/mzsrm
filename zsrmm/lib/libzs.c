@@ -150,13 +150,14 @@ int zs_wait_next_period(int fd, int rid){
 	return ret;
 }
 
-int zs_wait_next_arrival(int fd, int rid, int wfd){
+int zs_wait_next_arrival(int fd, int rid, struct pollfd *fds, unsigned int nfds){
   struct api_call call;
   int ret;
 
   call.api_id = WAIT_NEXT_ARRIVAL;
   call.args.wait_next_arrival_params.reserveid = rid;
-  call.args.wait_next_arrival_params.wfd = wfd;
+  call.args.wait_next_arrival_params.fds = fds;
+  call.args.wait_next_arrival_params.nfds = nfds;
   while ((ret = write(fd, &call, sizeof(call))) == -1 && errno == EINTR)
     ;
 

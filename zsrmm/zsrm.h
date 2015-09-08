@@ -135,12 +135,17 @@ DM-0000891
  */
 // Types of reserves
 #define CRITICALITY_RESERVE 0
-#define UTILITY_RESERVE 2
+#define UTILITY_RESERVE 1
+
+#define RESERVE_TYPE_MASK 1
+
 // Arrival type
-#define APERIODIC_ARRIVAL 4 // bit == 0 => periodic
+#define APERIODIC_ARRIVAL 2 // bit == 0 => periodic
+#define RESERVE_PERIODICITY_MASK 2
 
 /* END OF RESERVE TYPE DEFINITIONS
  */
+
 
 #define TIMESPEC2NS(ts) (((unsigned long long) (ts)->tv_sec) * 1000000000ll + (unsigned long long) (ts)->tv_nsec)
 
@@ -313,7 +318,8 @@ struct raise_priority_criticality_api{
 
 struct wait_next_arrival_api{
   int reserveid;
-  int wfd;
+  struct pollfd *fds;
+  unsigned int nfds;
 };
 
 struct api_call{
@@ -351,7 +357,7 @@ int zs_detach_reserve(int fd, int rid);
 int zs_delete_reserve(int fd, int rid);
 int zs_modal_wait_next_period(int fd, int mrid);
 int zs_wait_next_period(int fd, int rid);
-int zs_wait_next_arrival(int fd, int rid, int wfd);
+int zs_wait_next_arrival(int fd, int rid, struct pollfd *fds, unsigned int nfds);
 int zs_get_jiffies_ms(int fd);
 int zs_add_reserve_to_mode(int fid, int mrid, int mode, int rid);
 int zs_print_stats(int fd);

@@ -9,11 +9,27 @@
 #include <string.h>
 #include <sched.h>
 #include <errno.h>
+#include <sys/sem.h>
+#include <sys/ipc.h>
+
 
 #include "../../zsrm.h"
 
 
 #define BUFSIZE 100
+
+int wait_start_signal(int sync_start_semid){
+  struct sembuf sops;
+  sops.sem_num=0;
+  sops.sem_op = -1; // down
+  sops.sem_flg = 0;
+  if (semop(sync_start_semid,&sops,1)<0){
+    printf("error on sync star sem down\n");
+    return -1;
+  }
+  return 0;
+}
+
 
 int main(int argc, char * argv[]){
   int rid;
@@ -30,6 +46,9 @@ int main(int argc, char * argv[]){
   char *dest_address;
   cpu_set_t cpuset;
   int io_flag=0;
+  key_t semkey;
+  int sync_start_semid;
+
   CPU_ZERO(&cpuset);
   CPU_SET(0,&cpuset);
   if (sched_setaffinity(getpid(), sizeof(cpu_set_t), &cpuset) != 0){
@@ -77,6 +96,17 @@ int main(int argc, char * argv[]){
   }
   
 
+  if ((semkey = ftok("/tmp", 11766)) == (key_t) -1) {
+    perror("IPC error: ftok"); exit(1);
+  }
+
+  // create sync start semaphore
+  if ((sync_start_semid = semget(semkey, 1, 0)) <0){
+    perror("obtaining the semaphone\n");
+    return -1;
+  }
+
+
   // create reserve
   cpuattr.period.tv_sec = 5;
   cpuattr.period.tv_nsec=0;
@@ -113,6 +143,10 @@ int main(int argc, char * argv[]){
   }
 
   rid = zs_create_reserve(sched,&cpuattr);
+
+  // wait for up on start sync sem
+  wait_start_signal(sync_start_semid);
+
   zs_attach_reserve(sched,rid,getpid());
 
   buf[0] = '\0';

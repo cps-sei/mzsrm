@@ -45,10 +45,17 @@ DM-0000891
 
 #ifdef __KERNEL__
 #include <linux/time.h>
+#include <linux/socket.h>
+#include <linux/net.h>
+#include <linux/in.h>
 #else
 #include <sys/time.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <arpa/inet.h>
 #endif
 
+#define MODULE_SIGNATURE (0xf65e3d90)
 
 #define DAEMON_PRIORITY 50;
 // calls
@@ -95,6 +102,11 @@ DM-0000891
 #define RESTORE_BASE_PRIORITY_CRITICALITY 22
 
 #define WAIT_NEXT_ARRIVAL 23
+#define WAIT_NEXT_LEAF_STAGE_ARRIVAL 24
+#define WAIT_NEXT_STAGE_ARRIVAL 25
+#define WAIT_NEXT_ROOT_PERIOD 26
+#define GET_PIPELINE_HEADER_SIZE 27
+#define GET_PIPELINE_HEADER_SIGNATURE 28
 
 #define TIMER_ZS  1
 #define TIMER_ENF 2
@@ -121,9 +133,11 @@ DM-0000891
 #define ZS_RESPONSE_TIME_ENFORCEMENT_MASK 0x1
 #define ZS_PERIOD_DEGRADATION_MAKS 0x2
 #define ZS_CRITICALITY_ENFORCEMENT_MASK 0x4
+#define DONT_ENFORCE_ZERO_SLACK 0X8
 
 #define MAX_DEGRADED_MODES 4
 #define MAX_TRANSITIONS 64
+
 
 #define DISABLED_MODE -1
 
@@ -134,15 +148,26 @@ DM-0000891
  * The reserve type combines these types
  */
 // Types of reserves
-#define CRITICALITY_RESERVE 0
-#define UTILITY_RESERVE 1
-
-#define RESERVE_TYPE_MASK 1
+#define CRITICALITY_RESERVE      0b0000001
+#define UTILITY_RESERVE          0b0000010
 
 // Arrival type
-#define APERIODIC_ARRIVAL 2 // bit == 0 => periodic
-#define RESERVE_PERIODICITY_MASK 2
+#define APERIODIC_ARRIVAL        0b0000100
+#define PERIODIC_ARRIVAL         0b0001000
 
+// Pipeline stage type
+#define PIPELINE_STAGE_TYPE_MASK 0b1110000
+#define PIPELINE_STAGE_ROOT      0b0010000
+#define PIPELINE_STAGE_MIDDLE    0b0100000
+#define PIPELINE_STAGE_LEAF      0b1000000
+
+// middle stage I/O Mask
+// To capture whether or not it should send output
+//    (shouldn't the first time) 
+// or wait for the input
+//    (shouldn't the last time)
+#define MIDDLE_STAGE_DONT_SEND_OUTPUT 0b01
+#define MIDDLE_STAGE_DONT_WAIT_INPUT  0b10
 /* END OF RESERVE TYPE DEFINITIONS
  */
 
@@ -155,6 +180,8 @@ struct zs_reserve_params{
   struct timespec period;
   struct timespec execution_time;
   struct timespec overload_execution_time;
+  struct timespec e2e_execution_time;
+  struct timespec e2e_overload_execution_time;
   struct timespec zs_instant;
   struct timespec response_time_instant;
   long normal_marginal_utility;
@@ -168,6 +195,11 @@ struct zs_reserve_params{
   struct timespec degraded_period[MAX_DEGRADED_MODES];
   int degraded_priority[MAX_DEGRADED_MODES];
   int reserve_type;
+  struct sockaddr_in outaddr;
+  int outdatalen;
+  int indatalen;
+  int insockfd;
+  int outsockfd;
 };
 
 struct zs_mode_transition{
@@ -182,7 +214,24 @@ struct zs_modal_transition_entry{
   int in_use;
 };
 
+
 #ifdef __KERNEL__
+
+struct pipeline_header{
+  unsigned long long cumm_exectime_nanos;
+  unsigned long long rem_start_of_period_nanos;
+  unsigned long long rem_sending_timestamp_nanos;
+};
+
+struct pipeline_header_with_signature{
+  unsigned int signature;
+  struct pipeline_header header;
+};
+
+struct pipeline_node_clocks{
+  struct sockaddr_in addr;
+  long long clock_diff;
+};
 
 struct zs_reserve {
   int rid;
@@ -206,10 +255,21 @@ struct zs_reserve {
   int execution_status;
   unsigned long long nominal_exectime_nanos;
   unsigned long long overload_exectime_nanos;
+  unsigned long long e2e_nominal_exectime_nanos;
+  unsigned long long e2e_overload_exectime_nanos;
   unsigned long long job_executing_nanos;
+  unsigned long long e2e_job_executing_nanos;
   unsigned long long job_resumed_timestamp_nanos;
+  unsigned long long local_e2e_start_of_period_nanos;
   struct zs_reserve *next_lower_priority;
   struct zs_reserve *next_paused_lower_criticality;
+  // for pipelines
+  void *indata;
+  int indatalen;
+  void *outdata;
+  int outdatalen;
+  struct socket *outsock;
+  struct socket *insock;
 };
 
 struct zs_modal_reserve{
@@ -277,6 +337,21 @@ void resume_reserve(struct zs_reserve *rsv);
 int push_to_reschedule(int i);
 int pop_to_reschedule(void);
 
+int wait_for_next_root_period(int rid, int fd, void __user *buf, size_t buflen, unsigned int flags, struct sockaddr __user *addr, int addr_len);
+int wait_for_next_stage_arrival(int rid, unsigned long *flags,
+				int fd, void __user *buf, size_t size, 
+				unsigned int sockflags, 
+				struct sockaddr __user *outaddr, 
+				int outaddrlen,
+				struct sockaddr __user *inaddr, 
+				int __user *inaddrlen,
+				int io_mask);
+
+int wait_for_next_leaf_stage_arrival(int rid, unsigned long *flags, int fd, void __user *ubuf, size_t size, unsigned int sockflags, struct sockaddr __user *addr, int __user *addr_len);
+void end_of_job_processing(int rid, int is_pipeline_stage);
+int start_of_job_processing(int rid, long long zero_slack_adjustment_ns);
+long long calculate_zero_slack_adjustment_ns(unsigned long long start_period_ns);
+
 #endif
 
 struct attach_api{
@@ -322,6 +397,39 @@ struct wait_next_arrival_api{
   unsigned int nfds;
 };
 
+struct wait_next_leaf_stage_arrival_api{
+  int reserveid;
+  int fd;
+  void  *usrindata;
+  int usrindatalen;
+  unsigned int flags;
+  struct sockaddr *addr;
+  int *addr_len;
+};
+
+struct wait_next_stage_arrival_api{
+  int reserveid;
+  int fd;
+  void *usrdata;
+  int usrdatalen;
+  int flags;
+  struct sockaddr *outaddr;
+  int outaddrlen;
+  struct sockaddr *inaddr;
+  int *inaddrlen;
+  int io_flag;
+};
+
+struct wait_next_root_stage_period_api{
+  int reserveid;
+  int fd;
+  void *usroutdata;
+  int usroutdatalen;
+  int flags;
+  struct sockaddr *addr;
+  int addr_len;
+};
+
 struct api_call{
   int api_id;
   union {
@@ -336,6 +444,9 @@ struct api_call{
     struct set_initial_mode_modal_reserve_api set_initial_mode_params;
     struct raise_priority_criticality_api raise_priority_criticality_params;
     struct wait_next_arrival_api wait_next_arrival_params;
+    struct wait_next_leaf_stage_arrival_api wait_next_leaf_stage_arrival_params;
+    struct wait_next_stage_arrival_api wait_next_stage_arrival_params;
+    struct wait_next_root_stage_period_api wait_next_root_stage_period_params;
   }args;
 };
 
@@ -358,10 +469,19 @@ int zs_delete_reserve(int fd, int rid);
 int zs_modal_wait_next_period(int fd, int mrid);
 int zs_wait_next_period(int fd, int rid);
 int zs_wait_next_arrival(int fd, int rid, struct pollfd *fds, unsigned int nfds);
+int zs_wait_next_stage_arrival(int sched, int rid, int fd, void *data, int datalen, int flags, struct sockaddr *outaddr, int outaddrlen, struct sockaddr *inaddr, int *inaddrlen, int io_flag);
+int zs_wait_next_leaf_stage_arrival(int schedfd, int rid, int fd, void *indata, int indatalen, unsigned int flags, struct sockaddr *addr, int *addr_len);
+//int zs_wait_next_root_period(int fd, int rid, void *outdata, int outdatalen);
+int zs_wait_next_root_period(int schedfd, int rid, int fd, void *buf, size_t buflen, unsigned int flags, struct sockaddr *addr, int addr_len);
 int zs_get_jiffies_ms(int fd);
 int zs_add_reserve_to_mode(int fid, int mrid, int mode, int rid);
 int zs_print_stats(int fd);
 
 int zs_raise_priority_criticality(int fid, int priority_ceiling,int criticality_ceiling);
 int zs_restore_base_priority_criticality(int fid);
+
+int zs_get_pipeline_header_size(int fid);
+int zs_get_pipeline_header_signature(int fid);
+void *zs_alloc_stage_msg_packet(int sched_fd, size_t size);
+void zs_free_msg_packet(int sched_fd, void *buf);
 #endif

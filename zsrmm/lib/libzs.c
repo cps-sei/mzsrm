@@ -336,3 +336,110 @@ int zs_pccp_mutex_unlock(int sched_id, zs_pccp_mutex_t *mutex){
 int zs_pccp_mutex_destroy(zs_pccp_mutex_t *mutex){
   return pthread_mutex_destroy(&(mutex->pmutex));
 }
+
+int zs_wait_next_stage_arrival(int sched_fid, int rid, int fd, void *data, int datalen, int flags, struct sockaddr *outaddr, int outaddrlen, struct sockaddr *inaddr, int *inaddrlen, int io_flag){
+  struct api_call call;
+  int ret;
+
+  call.api_id = WAIT_NEXT_STAGE_ARRIVAL;
+  call.args.wait_next_stage_arrival_params.reserveid = rid;
+  call.args.wait_next_stage_arrival_params.fd = fd;
+  call.args.wait_next_stage_arrival_params.usrdata = data;
+  call.args.wait_next_stage_arrival_params.usrdatalen = datalen;
+  call.args.wait_next_stage_arrival_params.flags = flags;
+  call.args.wait_next_stage_arrival_params.outaddr = outaddr;
+  call.args.wait_next_stage_arrival_params.outaddrlen = outaddrlen;
+  call.args.wait_next_stage_arrival_params.inaddr = inaddr;
+  call.args.wait_next_stage_arrival_params.inaddrlen = inaddrlen;
+  call.args.wait_next_stage_arrival_params.io_flag = io_flag;
+
+  ret = write(sched_fid,&call, sizeof(call));
+  return ret;
+}
+
+int zs_wait_next_leaf_stage_arrival(int sched_fid, int rid, int fd, void *indata, int indatalen, unsigned int flags, struct sockaddr *addr, int *addr_len){
+  struct api_call call;
+  int ret;
+
+  call.api_id = WAIT_NEXT_LEAF_STAGE_ARRIVAL;
+  call.args.wait_next_leaf_stage_arrival_params.reserveid = rid;
+  call.args.wait_next_leaf_stage_arrival_params.usrindata = indata;
+  call.args.wait_next_leaf_stage_arrival_params.usrindatalen = indatalen;
+  call.args.wait_next_leaf_stage_arrival_params.fd = fd;
+  call.args.wait_next_leaf_stage_arrival_params.flags = flags;
+  call.args.wait_next_leaf_stage_arrival_params.addr = addr;
+  call.args.wait_next_leaf_stage_arrival_params.addr_len =addr_len;
+
+  ret = write(sched_fid,&call, sizeof(call));
+  return ret;
+}
+
+//int zs_wait_next_root_period(int sched_fid, int rid, void *outdata, int outdatalen){
+int zs_wait_next_root_period(int sched_fid, int rid, int fd, void *buf, size_t buflen, unsigned int flags, struct sockaddr *addr, int addrlen){
+
+  struct api_call call;
+  int ret;
+
+  call.api_id = WAIT_NEXT_ROOT_PERIOD;
+  call.args.wait_next_root_stage_period_params.reserveid = rid;
+  call.args.wait_next_root_stage_period_params.fd = fd;
+  call.args.wait_next_root_stage_period_params.usroutdata = buf;
+  call.args.wait_next_root_stage_period_params.usroutdatalen = buflen;
+  call.args.wait_next_root_stage_period_params.flags = flags;
+  call.args.wait_next_root_stage_period_params.addr = addr;
+  call.args.wait_next_root_stage_period_params.addr_len = addrlen;
+
+  ret = write(sched_fid,&call, sizeof(call));
+  return ret;
+}
+
+int zs_get_pipeline_header_size(int sched_fd){
+  struct api_call call;
+  int ret;
+
+  call.api_id = GET_PIPELINE_HEADER_SIZE;
+
+  ret = write(sched_fd, &call, sizeof(call));
+  return ret;
+}
+
+int zs_get_pipeline_header_signature(int sched_fd){
+  struct api_call call;
+  int ret;
+
+  call.api_id = GET_PIPELINE_HEADER_SIGNATURE;
+
+  ret = write(sched_fd, &call, sizeof(call));
+  return ret;
+}
+
+void *zs_alloc_stage_msg_packet(int sched_fd, size_t size){
+  int header_size;
+  unsigned int signature;
+  void *p;
+  unsigned int *pheader;
+
+  signature = zs_get_pipeline_header_signature(sched_fd);
+  header_size = zs_get_pipeline_header_size(sched_fd);
+
+  p = malloc(size+header_size);
+
+  if (p!= NULL){
+    pheader = (unsigned int *) p;
+    *pheader = signature;
+    
+    return (p+header_size);
+  } else {
+    return NULL;
+  }
+}
+
+void zs_free_msg_packet(int sched_fd, void *buf){
+  int header_size;
+
+  header_size = zs_get_pipeline_header_size(sched_fd);
+
+  buf = buf - header_size;
+
+  free(buf);
+}

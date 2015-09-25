@@ -380,18 +380,21 @@ void resume_paused_reserves(int criticality){
 void kill_reserve(struct zs_reserve *rsv){
   struct task_struct *task;
   struct sched_param p;
+  char *type = (rsv->params.reserve_type & APERIODIC_ARRIVAL?"APERIODIC":"PERIODIC");
   task = gettask(rsv->pid);
   if (task != NULL){
     // restore priority
     p.sched_priority = rsv->effective_priority;
-    sched_setscheduler(task, SCHED_FIFO, &p);
-    printk("zsrmm.kill_reserve: setting rid(%d) TASK_INTERRUPTIBLE\n",rsv->rid);
+    sched_setscheduler(task, SCHED_FIFO, &p);    
+    printk("zsrmm.kill_reserve: setting rid(%d) %s TASK_INTERRUPTIBLE\n",rsv->rid,type);
     set_task_state(task, TASK_INTERRUPTIBLE);
     set_tsk_need_resched(task);
+  } else {
+    printk("zsrmm.kill_reserve: task not found\n");
   }
 
   // jumps directly to wait for next period
-  rsv->execution_status = EXEC_WAIT_NEXT_PERIOD;
+  rsv->execution_status = EXEC_WAIT_NEXT_PERIOD | EXEC_DEFERRED;
   rsv->critical_utility_mode_enforced=0;
   /* --- cancel all timers --- */
   if (rsv->params.enforcement_mask & ZS_RESPONSE_TIME_ENFORCEMENT_MASK){
@@ -580,6 +583,49 @@ long system_utility=0;
 int reschedule_stack[MAX_RESERVES];
 int top=-1;
 
+struct task_struct *arrival_task=NULL;
+
+int fd2rid(int fd){
+  int i;
+
+  for (i=0;i<MAX_RESERVES;i++){
+    if (reserve_table[i].params.priority == -1)
+      continue;
+    if (reserve_table[i].params.insockfd == fd){
+      return i;
+    }
+  }
+
+  return -1;
+}
+
+static void arrival_server_task(void *a){
+  int i;
+  struct pollfd *fds ;
+  struct arrival_server_task_params *args;
+  
+
+  args = (struct arrival_server_task_params *) a;
+
+  fds = kmalloc(sizeof(struct pollfd)*args->nfds,GFP_KERNEL);
+
+  while (!kthread_should_stop()) {
+      do_sys_pollp(args->fds, args->nfds, NULL);
+      if (!copy_from_user(&fds, args->fds,sizeof(struct pollfd)*args->nfds)){
+	for (i=0;i<args->nfds;i++){
+	  if (fds[i].revents & POLLRDNORM){
+	    // wakeup the process. For now just print
+	    printk("zsrmm: fd(%d) rid(%d) event\n",fds[i].fd,fd2rid(fds[i].fd));
+	  }
+	}
+      } else {
+	printk("zsrmm:arrival_server: could not copy fds from user space\n");
+      }
+  }
+
+  kfree(fds);
+}
+
 struct task_struct *gettask(int pid){
   struct task_struct *tsk;
   struct pid *pid_struct;
@@ -707,6 +753,7 @@ enum hrtimer_restart zs_instant_handler(struct hrtimer *timer){
 		spin_unlock_irqrestore(&zsrmlock,flags);
 		return HRTIMER_NORESTART;
 	}
+
 	// special debugging mask
 	if (!(reserve_table[rid].params.enforcement_mask & 
 	      DONT_ENFORCE_ZERO_SLACK)){
@@ -791,7 +838,7 @@ enum hrtimer_restart period_handler(struct hrtimer *timer){
 	ktime_t kresptime;
 	struct timespec *p;
 	unsigned long flags;
-	struct timespec now,sop;
+	struct timespec now;
 	unsigned long long now_ns;
 	int newmode=0;
 	int oldmode=0;
@@ -905,8 +952,8 @@ enum hrtimer_restart period_handler(struct hrtimer *timer){
 	  hrtimer_start(&(reserve_table[rid].zs_timer), kzs, HRTIMER_MODE_REL);
 	  //jiffies_to_timespec(jiffies, &reserve_table[rid].start_of_period);
 	  now2timespec(&reserve_table[rid].start_of_period);
-	  getnstimeofday(&sop);
-	  reserve_table[rid].local_e2e_start_of_period_nanos = TIMESPEC2NS(&sop); 
+	  //getnstimeofday(&sop);
+	  reserve_table[rid].local_e2e_start_of_period_nanos = ticks2nanos(rdtsc());//TIMESPEC2NS(&sop); 
 	  record_latest_deadline(&(reserve_table[rid].params.period));
 	  //printk("waking up process: %d at %ld:%ld\n",reserve_table[rid].pid,now.tv_sec, now.tv_nsec);
 	  reserve_table[rid].effective_priority = (reserve_table[rid].current_degraded_mode == -1) ? reserve_table[rid].params.priority :
@@ -1398,9 +1445,14 @@ void period_degradation(int rid){
   long tmp_marginal_utility;
   int i,j;
   int maxreserves = (modal_scheduling == 0 ? MAX_RESERVES : MAX_MODAL_RESERVES);
+  long long elapsedns;
   
   
   printk(KERN_INFO "period degradation:start\n");
+
+  elapsedns = ticks2nanos(rdtsc()) - reserve_table[rid].local_e2e_start_of_period_nanos;
+  printk("period degradation debug: reserve(%d) criticality(%ld) sys_util(%ld) elapse(%lld)\n",rid, GET_EFFECTIVE_UTILITY(rid),system_utility, elapsedns);
+
   current_marginal_utility = GET_EFFECTIVE_UTILITY(rid);
   
   reserve_table[rid].in_critical_mode = 1;
@@ -1417,7 +1469,7 @@ void period_degradation(int rid){
       }
     } 
   } 
-  
+
   // now degrade all others  
   for (j=0;j < maxreserves; j++){	  
 
@@ -1435,6 +1487,9 @@ void period_degradation(int rid){
     if (reserve_table[i].params.priority == -1)
       continue;
     
+    // only the ones on the same processor
+    if (reserve_table[rid].params.bound_to_cpu != reserve_table[i].params.bound_to_cpu)
+      continue;
     
     tmp_marginal_utility = GET_EFFECTIVE_UTILITY(i);
     
@@ -1541,12 +1596,9 @@ unsigned long long get_adjusted_root_start_of_period(unsigned long long receivin
  */
 
 long long calculate_zero_slack_adjustment_ns(unsigned long long start_period_ns){
-  struct timespec now_ts;
   unsigned long long now_ns;
 
-  getnstimeofday(&now_ts);
-
-  now_ns = TIMESPEC2NS(&now_ts);
+  now_ns = ticks2nanos(rdtsc());
 
   return (start_period_ns - now_ns);
 }
@@ -1612,11 +1664,12 @@ int wait_for_next_leaf_stage_arrival(int rid, unsigned long *flags,
   printk("zsrmm: wait_next_leaf_arrival: remote address(0x%X)\n",remaddr.sin_addr.s_addr);
 
   // TODO: reprogram the e2e_zs_timer discounting the currently elapsed e2e response time
-
-  zero_slack_adjustment = calculate_zero_slack_adjustment_ns(reserve_table[rid].local_e2e_start_of_period_nanos);
-
-  if (start_of_job_processing(rid, zero_slack_adjustment)){
-    printk("zsrmm: wait_next_leaf_arrival: start job failed zero_slack_adjustment(%lld)\n",zero_slack_adjustment);
+  
+  if (reserve_table[rid].execution_status & EXEC_WAIT_NEXT_PERIOD){
+    zero_slack_adjustment = calculate_zero_slack_adjustment_ns(reserve_table[rid].local_e2e_start_of_period_nanos);
+    if (start_of_job_processing(rid, zero_slack_adjustment)){
+      printk("zsrmm: wait_next_leaf_arrival: START OF JOB FAILED zero_slack_adjustment(%lld)\n",zero_slack_adjustment);
+    }
   }
 
   return len;
@@ -1719,10 +1772,12 @@ int wait_for_next_stage_arrival(int rid, unsigned long *flags,
       
       // TODO: reprogram the e2e_zs_timer discounting the currently elapsed e2e response time
       
-      zero_slack_adjustment = calculate_zero_slack_adjustment_ns(reserve_table[rid].local_e2e_start_of_period_nanos);
-
-      if (start_of_job_processing(rid,zero_slack_adjustment)){
-	printk("zsrmm: wait_next_stage_arrival: start job returned error adjustment(%lld)!!\n",zero_slack_adjustment);
+      if (reserve_table[rid].execution_status & EXEC_WAIT_NEXT_PERIOD){
+	zero_slack_adjustment = calculate_zero_slack_adjustment_ns(reserve_table[rid].local_e2e_start_of_period_nanos);
+	
+	if (start_of_job_processing(rid,zero_slack_adjustment)){
+	  printk("zsrmm: wait_next_stage_arrival: start job returned error adjustment(%lld)!!\n",zero_slack_adjustment);
+	}
       }
       
     }
@@ -1737,11 +1792,8 @@ int wait_for_next_root_period(int rid, int fd, void __user *buf, size_t buflen, 
 
   end_of_job_processing(rid, 1);
   
-  printk("zsrmm: wait_next_root_period: trying to send msglen(%d) to iet address(0x%X) port(%d) from pointer(%p)\n", 
-	 (int)buflen,
-	 reserve_table[rid].params.outaddr.sin_addr.s_addr, 
-	 reserve_table[rid].params.outaddr.sin_port,
-	 reserve_table[rid].outdata);
+  printk("zsrmm: wait_next_root_period: trying to send msglen(%d)\n", 
+	 (int)buflen);
 
   if (copy_from_user(&pipeline_hdrs, (buf-sizeof(struct pipeline_header_with_signature)), 
 		     sizeof(struct pipeline_header_with_signature))){
@@ -1812,6 +1864,7 @@ int start_of_job_processing(int rid, long long zero_slack_adjustment_ns){
   adjusted_zs_instant.tv_nsec = reserve_table[rid].params.zs_instant.tv_nsec;
   if (zero_slack_adjustment_ns != 0){
     zs_instant_ns = TIMESPEC2NS(&adjusted_zs_instant);
+    printk("start of job reserve(%d) original zs(%llu) adjustment(%lld)\n",rid, zs_instant_ns, zero_slack_adjustment_ns);
     zs_instant_ns = zs_instant_ns + zero_slack_adjustment_ns;
     if (zs_instant_ns <0){
       // too late to setup timer!! zs already elapsed
@@ -1820,6 +1873,8 @@ int start_of_job_processing(int rid, long long zero_slack_adjustment_ns){
     }
     nanos2timespec(zs_instant_ns, &adjusted_zs_instant);
   }
+
+  printk("reserve(%d) start of job zs instant at (%llu)\n", rid, TIMESPEC2NS(&adjusted_zs_instant));
 
   kzs = ktime_set(adjusted_zs_instant.tv_sec, 
 		  adjusted_zs_instant.tv_nsec);
@@ -1839,7 +1894,8 @@ int start_of_job_processing(int rid, long long zero_slack_adjustment_ns){
     start_accounting(&reserve_table[rid]);
 
     p.sched_priority = reserve_table[rid].params.priority;
-    sched_setscheduler(current, SCHED_FIFO, &p);
+    //sched_setscheduler(current, SCHED_FIFO, &p);
+    sched_setscheduler(gettask(reserve_table[rid].pid), SCHED_FIFO, &p);
   }
 
   return 0;
@@ -2031,6 +2087,45 @@ int restore_base_priority_criticality(int rid){
   return 0;
 }
 
+int kfds[MAX_RESERVES];
+
+int notify_arrival(int __user *fds, int nfds){
+  struct task_struct *task;
+  int i,j;
+  long long zero_slack_adjustment;
+
+  if (copy_from_user(&kfds, fds, sizeof(int) * nfds)){
+    return -EFAULT;
+  }
+
+  for (i=0;i<nfds;i++){
+    for (j=0;j<MAX_RESERVES;j++){
+      if (reserve_table[j].params.priority == -1)
+	continue;
+      if (reserve_table[j].params.insockfd == kfds[i]){
+	if (reserve_table[j].execution_status & EXEC_DEFERRED){
+	  task = gettask(reserve_table[j].pid);
+	  if (task != NULL){
+	    if ((task->state & TASK_INTERRUPTIBLE) || 
+		(task->state & TASK_UNINTERRUPTIBLE)){
+	      printk("zsrmm.notify_arrival: waking up rsv(%d)\n",j);
+	      wake_up_process(task);
+	    }
+	  }
+	  zero_slack_adjustment = 
+	    calculate_zero_slack_adjustment_ns(reserve_table[j].local_e2e_start_of_period_nanos);	
+	  if (start_of_job_processing(j,zero_slack_adjustment)){
+	    printk("zsrmm: notify_arrival: start job returned error adjustment(%lld)!!\n",zero_slack_adjustment);
+	  }
+	  printk("zsrmm: notify_arrival reserve(%d) resumed\n",j);
+	} else {
+	  printk("zsrmm.notify_arrival: rid(%d) NOT DEFERRED\n",j);
+	}
+      }
+    }
+  }
+  return 0;
+}
 
 void init(void){
   int i,j;
@@ -2271,6 +2366,10 @@ static ssize_t zsrm_write
     res = wait_for_next_period(call.args.reserveid);
     need_reschedule = 1;
     break;
+  case INITIALIZE_NODE:
+    res = start_arrival_task(call.args.initialize_node_params.fds,
+			     call.args.initialize_node_params.nfds);
+    break;
   case WAIT_NEXT_ARRIVAL:
     res = wait_for_next_arrival(call.args.wait_next_arrival_params.reserveid, 
 				call.args.wait_next_arrival_params.fds, 
@@ -2352,6 +2451,13 @@ static ssize_t zsrm_write
 	       call.args.wait_next_root_stage_period_params.reserveid);
       }
     }
+    break;
+  case NOTIFY_ARRIVAL:
+    res = notify_arrival(call.args.notify_arrival_params.fds,
+			 call.args.notify_arrival_params.nfds);
+    break;
+  case GET_SCHEDULER_PRIORITY:
+    res = scheduler_priority;
     break;
   case RAISE_PRIORITY_CRITICALITY:
     {
@@ -2576,14 +2682,28 @@ static int __init zsrm_init(void)
     return err;
   }
   
-  sched_task = kthread_create((void *)scheduler_task, NULL, "ZSRMM scheduler thread");
-  
+  sched_task = kthread_create((void *)scheduler_task, NULL, "ZSRMM scheduler thread");  
   p.sched_priority = scheduler_priority;
   sched_setscheduler(sched_task, SCHED_FIFO, &p);
   kthread_bind(sched_task, 0);
+
   printk(KERN_WARNING "MZSRMM: nanos per ten ticks: %lu \n",nanosPerTenTicks);
   printk(KERN_WARNING "MZSRMM: ready!\n");
     
+  return 0;
+}
+
+int start_arrival_task(struct pollfd __user *fds, unsigned int nfds){
+  struct arrival_server_task_params params;
+  struct sched_param p;
+
+  params.fds = fds;
+  params.nfds = nfds;
+
+  arrival_task = kthread_create((void *) arrival_server_task, (void *)&params, "ASRM Arrival Server Task");
+  p.sched_priority = scheduler_priority;
+  sched_setscheduler(arrival_task, SCHED_FIFO,&p);
+  kthread_bind(arrival_task,0);
   return 0;
 }
 
@@ -2689,7 +2809,10 @@ static void __exit zsrm_exit(void)
   
   zsrm_cleanup_module();
   
-  kthread_stop(sched_task);
+  /* kthread_stop(sched_task); */
+  /* if (arrival_task != NULL){ */
+  /*   kthread_stop(arrival_task); */
+  /* } */
 }
 
 module_init(zsrm_init);

@@ -46,7 +46,7 @@ AS=as
 SRCS = $(wildcard *.c)
 
 PROGS = $(patsubst %.c,%,$(SRCS))
-CFLAGS = -lrt -lzs -L../../lib
+CFLAGS = -g -lrt -lzs -lpthread -L../../lib
 
 all: $(PROGS)
 

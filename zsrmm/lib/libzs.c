@@ -1,5 +1,4 @@
-/*
-Copyright (c) 2014 Carnegie Mellon University.
+/*) 2014 Carnegie Mellon University.
 
 All Rights Reserved.
 
@@ -51,6 +50,7 @@ DM-0000891
 #include <sys/ioctl.h>
 #include <sys/unistd.h>
 #include <errno.h>
+#include <sys/epoll.h>
 
 int zs_open_sched(){
 	int fd;
@@ -442,4 +442,112 @@ void zs_free_msg_packet(int sched_fd, void *buf){
   buf = buf - header_size;
 
   free(buf);
+}
+
+int zs_notify_arrival(int sched, int *fds, int nfds){
+  struct api_call call;
+  int ret;
+
+  call.api_id = NOTIFY_ARRIVAL;
+  call.args.notify_arrival_params.fds = fds;
+  call.args.notify_arrival_params.nfds = nfds;
+
+  ret = write(sched, &call, sizeof(call));
+  return ret;
+  
+}
+
+int request_poll_server_shutdown = 0;
+
+void *poll_server_task(void *argp){
+  int i;
+  int ret;
+  int sched;
+  int epollfd;
+  int fds[MAX_RESERVES];
+  int nfds=0;
+  struct sched_param schedp;
+  struct epoll_event ev, *events;
+  struct poll_server_params *p = (struct poll_server_params *)argp;
+
+  sched = p->sched;
+
+  events = calloc(p->nfds,sizeof(struct epoll_event));
+  if (events == NULL){
+    printf("could not allocation events memory\n");
+    return NULL;
+  }
+
+  if ((epollfd = epoll_create(p->nfds))<0){
+    printf("error creating epoll\n");
+    return NULL;
+  }
+
+  for (i=0;i<p->nfds;i++){
+    ev.events = EPOLLIN | EPOLLET;
+    ev.data.fd = p->fds[i];
+    if (epoll_ctl(epollfd, EPOLL_CTL_ADD, p->fds[i],&ev)<0){
+      printf("error adding event\n");
+      return NULL;
+    }
+  }
+
+  schedp.sched_priority = zs_get_scheduler_priority(sched);
+
+  printf("setting polling server priority to: %d\n",schedp.sched_priority);
+  if (pthread_setschedparam(pthread_self(), SCHED_FIFO,&schedp)<0){
+    printf("poll server. error setting fixed priority\n");
+    return NULL;
+  }
+  
+  while (!request_poll_server_shutdown){
+    ret = epoll_wait(epollfd, events, p->nfds, -1);
+    if (ret <0){
+      printf("epoll failed\n");
+    }
+    if (ret >0){
+      if (ret <= MAX_RESERVES){
+	for (i=0;i<ret;i++){
+	  //printf("data available in fd(%d)\n",events[i].data.fd);
+	  fds[i] = events[i].data.fd;
+	}
+	zs_notify_arrival(sched, fds, ret);
+      } else {
+	printf("arrival server: too many arrival events: %d\n",ret);
+      }
+    }
+  }
+  free(events);
+}
+
+struct poll_server_params p;
+
+pthread_t zs_start_node(int sched_fid, int *fds, unsigned int nfds){
+  pthread_t server_tid;
+
+  p.sched = sched_fid;
+  p.fds = fds;
+  p.nfds = nfds;
+  p.sched = sched_fid;
+
+  request_poll_server_shutdown = 0;
+  if (pthread_create(&server_tid, NULL, poll_server_task, (void*) &p) != 0){
+    printf("error creating poll server thread\n");
+    return -1;
+  }
+  return server_tid;
+}
+
+void zs_stop_node(pthread_t tid){
+  request_poll_server_shutdown = 1;
+  pthread_kill(tid,SIGQUIT);
+}
+
+int zs_get_scheduler_priority(int sched){
+  struct api_call call;
+  int ret;
+
+  call.api_id = GET_SCHEDULER_PRIORITY;
+  ret = write(sched,&call, sizeof(call));
+  return ret;
 }

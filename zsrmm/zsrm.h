@@ -53,6 +53,7 @@ DM-0000891
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <arpa/inet.h>
+#include <pthread.h>
 #endif
 
 #define MODULE_SIGNATURE (0xf65e3d90)
@@ -95,6 +96,7 @@ DM-0000891
 #define EXEC_RUNNING 2
 #define EXEC_ENFORCED_PAUSED 4
 #define EXEC_ENFORCED_DROPPED 8
+#define EXEC_DEFERRED 16
 
 #define WAIT_NEXT_PERIOD 20
 
@@ -107,6 +109,9 @@ DM-0000891
 #define WAIT_NEXT_ROOT_PERIOD 26
 #define GET_PIPELINE_HEADER_SIZE 27
 #define GET_PIPELINE_HEADER_SIGNATURE 28
+#define INITIALIZE_NODE 29
+#define NOTIFY_ARRIVAL 30
+#define GET_SCHEDULER_PRIORITY 31
 
 #define TIMER_ZS  1
 #define TIMER_ENF 2
@@ -195,6 +200,7 @@ struct zs_reserve_params{
   struct timespec degraded_period[MAX_DEGRADED_MODES];
   int degraded_priority[MAX_DEGRADED_MODES];
   int reserve_type;
+  int bound_to_cpu;
   struct sockaddr_in outaddr;
   int outdatalen;
   int indatalen;
@@ -216,6 +222,11 @@ struct zs_modal_transition_entry{
 
 
 #ifdef __KERNEL__
+
+struct arrival_server_task_params{
+  struct pollfd __user *fds;
+  unsigned int nfds;
+};
 
 struct pipeline_header{
   unsigned long long cumm_exectime_nanos;
@@ -351,7 +362,8 @@ int wait_for_next_leaf_stage_arrival(int rid, unsigned long *flags, int fd, void
 void end_of_job_processing(int rid, int is_pipeline_stage);
 int start_of_job_processing(int rid, long long zero_slack_adjustment_ns);
 long long calculate_zero_slack_adjustment_ns(unsigned long long start_period_ns);
-
+int start_arrival_task(struct pollfd __user *fds, unsigned int nfds);
+int notify_arrival(int __user *fds, int nfds);
 #endif
 
 struct attach_api{
@@ -397,6 +409,12 @@ struct wait_next_arrival_api{
   unsigned int nfds;
 };
 
+struct initialize_node_api{
+  int id;
+  struct pollfd *fds;
+  unsigned int nfds;
+};
+
 struct wait_next_leaf_stage_arrival_api{
   int reserveid;
   int fd;
@@ -430,6 +448,12 @@ struct wait_next_root_stage_period_api{
   int addr_len;
 };
 
+struct notify_arrival_api{
+  int *fds;
+  int nfds;
+  int sched;
+};
+
 struct api_call{
   int api_id;
   union {
@@ -447,7 +471,15 @@ struct api_call{
     struct wait_next_leaf_stage_arrival_api wait_next_leaf_stage_arrival_params;
     struct wait_next_stage_arrival_api wait_next_stage_arrival_params;
     struct wait_next_root_stage_period_api wait_next_root_stage_period_params;
+    struct initialize_node_api initialize_node_params;
+    struct notify_arrival_api notify_arrival_params;
   }args;
+};
+
+struct poll_server_params{
+  int sched;
+  int *fds;
+  unsigned int nfds;
 };
 
 // library calls signatures
@@ -484,4 +516,11 @@ int zs_get_pipeline_header_size(int fid);
 int zs_get_pipeline_header_signature(int fid);
 void *zs_alloc_stage_msg_packet(int sched_fd, size_t size);
 void zs_free_msg_packet(int sched_fd, void *buf);
+
+#ifndef __KERNEL__
+pthread_t zs_start_node(int sched, int *fds, unsigned int nfds);
+void zs_stop_node(pthread_t tid);
+int zs_get_scheduler_priority(int sched);
+#endif
+
 #endif

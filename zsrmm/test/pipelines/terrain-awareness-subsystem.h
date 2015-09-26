@@ -388,7 +388,7 @@ void *time_to_terrain_task(void *argp){
 
   io_flag = MIDDLE_STAGE_DONT_SEND_OUTPUT;
   i=0;
-  int firsttime=0;
+  int firsttime=1;
   buf[0] = '\0';
   while (strstr(buf,"bye") == NULL){
     remaddr_len = sizeof (outaddr);

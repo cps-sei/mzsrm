@@ -36,37 +36,37 @@ struct task_stage_params{
   int fd_index;
 };
 
-long bufidx1;
-long bufidx2;
-long bufidx3;
-long bufidx4;
+long bufidx1=0;
+long bufidx2=0;
+long bufidx3=0;
+long bufidx4=0;
 unsigned long long timestamps_ns1[MAX_TIMESTAMPS];
 unsigned long long timestamps_ns2[MAX_TIMESTAMPS];
 unsigned long long timestamps_ns3[MAX_TIMESTAMPS];
 unsigned long long timestamps_ns4[MAX_TIMESTAMPS];
 
-long bufidx5;
-long bufidx6;
-long bufidx7;
-long bufidx8;
+long bufidx5=0;
+long bufidx6=0;
+long bufidx7=0;
+long bufidx8=0;
 unsigned long long timestamps_ns5[MAX_TIMESTAMPS];
 unsigned long long timestamps_ns6[MAX_TIMESTAMPS];
 unsigned long long timestamps_ns7[MAX_TIMESTAMPS];
 unsigned long long timestamps_ns8[MAX_TIMESTAMPS];
 
-long bufidx9;
-long bufidxa;
-long bufidxb;
-long bufidxc;
+long bufidx9=0;
+long bufidxa=0;
+long bufidxb=0;
+long bufidxc=0;
 unsigned long long timestamps_ns9[MAX_TIMESTAMPS];
 unsigned long long timestamps_nsa[MAX_TIMESTAMPS];
 unsigned long long timestamps_nsb[MAX_TIMESTAMPS];
 unsigned long long timestamps_nsc[MAX_TIMESTAMPS];
 
-long bufidxd;
-long bufidxe;
-long bufidxf;
-long bufidxg;
+long bufidxd=0;
+long bufidxe=0;
+long bufidxf=0;
+long bufidxg=0;
 unsigned long long timestamps_nsd[MAX_TIMESTAMPS];
 unsigned long long timestamps_nse[MAX_TIMESTAMPS];
 unsigned long long timestamps_nsf[MAX_TIMESTAMPS];
@@ -371,14 +371,13 @@ int main(int argc, char *argv[]){
   pthread_join(tid_terrain_warning,NULL);
   printf("terrain warning finished \n");
 
-  zs_stop_node(nodetid);
-
   FILE* fid1 = fopen("ts-airspeed.txt","w+");
   if (fid1==NULL){
-    printf("erorr opening ts-airspeed.txt\n");
+    printf("error opening ts-airspeed.txt\n");
     return -1;
   }
 
+  printf("writing bufidx1(%lu) semples for airspeed\n",bufidx1);
   for (idx = 0 ; idx < bufidx1 ; idx++){
     fprintf(fid1,"%llu 1\n",timestamps_ns1[idx]-start_timestamp_ns);
   }
@@ -540,5 +539,8 @@ int main(int argc, char *argv[]){
   if (semctl(sync_start_semid, 0, IPC_RMID)<0){
     printf("error removing semaphore\n");
   }
+
+  printf("shutting down arrival server\n");
+  zs_stop_node(nodetid);
 
 }

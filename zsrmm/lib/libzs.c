@@ -540,7 +540,7 @@ pthread_t zs_start_node(int sched_fid, int *fds, unsigned int nfds){
 
 void zs_stop_node(pthread_t tid){
   request_poll_server_shutdown = 1;
-  pthread_kill(tid,SIGQUIT);
+  //pthread_kill(tid,SIGQUIT);
 }
 
 int zs_get_scheduler_priority(int sched){

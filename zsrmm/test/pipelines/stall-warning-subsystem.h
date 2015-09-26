@@ -501,8 +501,8 @@ void *angle_task(void *argp){
   cpuattr.execution_time.tv_nsec = 200000000;
   cpuattr.overload_execution_time.tv_sec = 0;
   cpuattr.overload_execution_time.tv_nsec = 500000000;
-  cpuattr.zs_instant.tv_sec=0;//3;
-  cpuattr.zs_instant.tv_nsec=380000000;//0;
+  cpuattr.zs_instant.tv_sec=3;
+  cpuattr.zs_instant.tv_nsec=800000000;
   cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
   cpuattr.reserve_type = CRITICALITY_RESERVE | PIPELINE_STAGE_LEAF | APERIODIC_ARRIVAL;
@@ -546,7 +546,7 @@ void *angle_task(void *argp){
   zs_attach_reserve(sched,rid,gettid());
 
   i=0;
-  int firsttime=0;
+  int firsttime=1;
   buf[0] = '\0';
   while (strstr(buf,"bye") == NULL){
     remaddr_len = sizeof(remaddr);

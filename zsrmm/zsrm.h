@@ -265,7 +265,7 @@ struct zs_reserve {
   // modal reserves!!
   int base_priority;
   int base_criticality;
-  int execution_status;
+  unsigned int execution_status;
   unsigned long long nominal_exectime_nanos;
   unsigned long long overload_exectime_nanos;
   unsigned long long e2e_nominal_exectime_nanos;
@@ -342,8 +342,8 @@ void test_accounting(void);
 
 void add_paused_reserve(struct zs_reserve *rsv);
 void del_paused_reserve(struct zs_reserve *rsv);
-void kill_paused_reserves(int criticality);
-void resume_paused_reserves(int criticality);
+void kill_paused_reserves(int criticality,int cpuid);
+void resume_paused_reserves(int criticality,int cpuid);
 void kill_reserve(struct zs_reserve *rsv);
 void pause_reserve(struct zs_reserve *rsv);
 void resume_reserve(struct zs_reserve *rsv);

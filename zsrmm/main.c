@@ -130,7 +130,7 @@ struct semaphore zsrmsem;
 int modal_scheduling  = 0; // NO by default
 
 struct zs_reserve *active_reserve_ptr[MAX_CPUS];
-struct zs_reserve *head_paused_reserve_ptr = NULL;
+struct zs_reserve *head_paused_reserve_ptr[MAX_CPUS];
 
 //timestamps
 unsigned long long arrival_ts_ns=0LL;
@@ -309,14 +309,14 @@ int print_stats(){
 
 void add_paused_reserve(struct zs_reserve *rsv){
   struct zs_reserve *tmp;
-  if (head_paused_reserve_ptr == NULL){
+  if (head_paused_reserve_ptr[rsv->params.bound_to_cpu] == NULL){
     rsv->next_paused_lower_criticality = NULL;
-    head_paused_reserve_ptr = rsv;
-  } else if (head_paused_reserve_ptr->params.overloaded_marginal_utility < rsv->params.overloaded_marginal_utility) {
-    rsv->next_paused_lower_criticality = head_paused_reserve_ptr;
-    head_paused_reserve_ptr = rsv;
+    head_paused_reserve_ptr[rsv->params.bound_to_cpu] = rsv;
+  } else if (head_paused_reserve_ptr[rsv->params.bound_to_cpu]->params.overloaded_marginal_utility < rsv->params.overloaded_marginal_utility) {
+    rsv->next_paused_lower_criticality = head_paused_reserve_ptr[rsv->params.bound_to_cpu];
+    head_paused_reserve_ptr[rsv->params.bound_to_cpu] = rsv;
   } else {
-    tmp = head_paused_reserve_ptr;
+    tmp = head_paused_reserve_ptr[rsv->params.bound_to_cpu];
     while (tmp->next_paused_lower_criticality != NULL && 
 	   tmp->next_paused_lower_criticality->params.overloaded_marginal_utility > rsv->params.overloaded_marginal_utility){
       tmp = tmp->next_paused_lower_criticality;
@@ -329,11 +329,11 @@ void add_paused_reserve(struct zs_reserve *rsv){
 void del_paused_reserve(struct zs_reserve *rsv){
   struct zs_reserve *tmp;
 
-  if (head_paused_reserve_ptr == rsv){
-    head_paused_reserve_ptr = head_paused_reserve_ptr->next_paused_lower_criticality;
+  if (head_paused_reserve_ptr[rsv->params.bound_to_cpu] == rsv){
+    head_paused_reserve_ptr[rsv->params.bound_to_cpu] = head_paused_reserve_ptr[rsv->params.bound_to_cpu]->next_paused_lower_criticality;
     rsv->next_paused_lower_criticality = NULL;
   } else {
-    tmp = head_paused_reserve_ptr;
+    tmp = head_paused_reserve_ptr[rsv->params.bound_to_cpu];
     while(tmp != NULL && 
 	  tmp->next_paused_lower_criticality != rsv){
       tmp = tmp->next_paused_lower_criticality;
@@ -343,8 +343,8 @@ void del_paused_reserve(struct zs_reserve *rsv){
   }
 }
 
-void kill_paused_reserves(int criticality){
-  struct zs_reserve *tmp = head_paused_reserve_ptr;
+void kill_paused_reserves(int criticality, int cpuid){
+  struct zs_reserve *tmp = head_paused_reserve_ptr[cpuid];
   struct zs_reserve *prev = NULL;
 
   while(tmp != NULL && tmp->params.overloaded_marginal_utility >= criticality){
@@ -354,22 +354,22 @@ void kill_paused_reserves(int criticality){
   while (tmp != NULL){
     kill_reserve(tmp);
     prev = tmp;
-    if (tmp == head_paused_reserve_ptr)
-      head_paused_reserve_ptr = tmp->next_paused_lower_criticality;
+    if (tmp == head_paused_reserve_ptr[cpuid])
+      head_paused_reserve_ptr[cpuid] = tmp->next_paused_lower_criticality;
     tmp=tmp->next_paused_lower_criticality;
     prev->next_paused_lower_criticality = NULL;
   }
 }
 
-void resume_paused_reserves(int criticality){
-  struct zs_reserve *tmp = head_paused_reserve_ptr;
+void resume_paused_reserves(int criticality, int cpuid){
+  struct zs_reserve *tmp = head_paused_reserve_ptr[cpuid];
   struct zs_reserve *prev = NULL;
 
   while(tmp != NULL && tmp->params.overloaded_marginal_utility >= criticality){
     resume_reserve(tmp);
     prev = tmp;
-    if (head_paused_reserve_ptr == tmp)
-      head_paused_reserve_ptr = tmp->next_paused_lower_criticality;
+    if (head_paused_reserve_ptr[cpuid] == tmp)
+      head_paused_reserve_ptr[cpuid] = tmp->next_paused_lower_criticality;
     tmp = tmp->next_paused_lower_criticality;
     prev->next_paused_lower_criticality = NULL;
   }
@@ -386,9 +386,11 @@ void kill_reserve(struct zs_reserve *rsv){
     // restore priority
     p.sched_priority = rsv->effective_priority;
     sched_setscheduler(task, SCHED_FIFO, &p);    
-    printk("zsrmm.kill_reserve: setting rid(%d) %s TASK_INTERRUPTIBLE\n",rsv->rid,type);
-    set_task_state(task, TASK_INTERRUPTIBLE);
-    set_tsk_need_resched(task);
+    printk("zsrmm.kill_reserve: setting rid(%d) %s TASK_UNINTERRUPTIBLE\n",rsv->rid,type);
+    /* set_task_state(task, TASK_UNINTERRUPTIBLE); */
+    /* set_tsk_need_resched(task); */
+    rsv->request_stop = 1;
+    push_to_reschedule(rsv->rid);
   } else {
     printk("zsrmm.kill_reserve: task not found\n");
   }
@@ -1330,11 +1332,11 @@ void finish_period_degradation(int rid, int is_pipeline_stage){
     //if (reserve_table[rid].job_executing_nanos > reserve_table[rid].nominal_exectime_nanos){
     // overloaded. Kill paused jobs
     printk("rid(%d) overloaded killing paused reserves\n",rid);
-    kill_paused_reserves(reserve_table[rid].params.overloaded_marginal_utility);
+    kill_paused_reserves(reserve_table[rid].params.overloaded_marginal_utility,reserve_table[rid].params.bound_to_cpu);
   } else {
     // did not overload. Resume jobs with new system_utility
     printk("rid(%d) DID NOT overload resuming paused reserves at criticality(%ld)\n",rid,system_utility);
-    resume_paused_reserves(system_utility);
+    resume_paused_reserves(system_utility,reserve_table[rid].params.bound_to_cpu);
   }
 
 
@@ -1859,6 +1861,7 @@ int start_of_job_processing(int rid, long long zero_slack_adjustment_ns){
   struct sched_param p;
   struct timespec adjusted_zs_instant;
   unsigned long long zs_instant_ns;
+  struct task_struct *task;
 
   adjusted_zs_instant.tv_sec = reserve_table[rid].params.zs_instant.tv_sec;
   adjusted_zs_instant.tv_nsec = reserve_table[rid].params.zs_instant.tv_nsec;
@@ -1893,9 +1896,15 @@ int start_of_job_processing(int rid, long long zero_slack_adjustment_ns){
     reserve_table[rid].execution_status = EXEC_RUNNING;    
     start_accounting(&reserve_table[rid]);
 
-    p.sched_priority = reserve_table[rid].params.priority;
+    p.sched_priority = reserve_table[rid].effective_priority;
     //sched_setscheduler(current, SCHED_FIFO, &p);
-    sched_setscheduler(gettask(reserve_table[rid].pid), SCHED_FIFO, &p);
+    task = gettask(reserve_table[rid].pid);
+    if (task != NULL){
+      sched_setscheduler(task, SCHED_FIFO, &p);
+      set_tsk_need_resched(task);
+    } else {
+      printk("zsrmm.start_of_job_processing: task == NULL");
+    }
   }
 
   return 0;
@@ -2104,12 +2113,14 @@ int notify_arrival(int __user *fds, int nfds){
 	continue;
       if (reserve_table[j].params.insockfd == kfds[i]){
 	if (reserve_table[j].execution_status & EXEC_DEFERRED){
+	  reserve_table[j].execution_status &= ~((unsigned int)EXEC_DEFERRED);
 	  task = gettask(reserve_table[j].pid);
 	  if (task != NULL){
 	    if ((task->state & TASK_INTERRUPTIBLE) || 
 		(task->state & TASK_UNINTERRUPTIBLE)){
 	      printk("zsrmm.notify_arrival: waking up rsv(%d)\n",j);
 	      wake_up_process(task);
+	      set_tsk_need_resched(task);
 	    }
 	  }
 	  zero_slack_adjustment = 
@@ -2142,6 +2153,7 @@ void init(void){
     reserve_table[i].parent_modal_reserve_id=-1;
     reserve_table[i].execution_status = EXEC_BEFORE_START;
     reserve_table[i].next_lower_priority = NULL;
+    reserve_table[i].next_paused_lower_criticality = NULL;
     reserve_table[i].e2e_job_executing_nanos=0L;
     reserve_table[i].local_e2e_start_of_period_nanos=0L;
   }
@@ -2455,6 +2467,7 @@ static ssize_t zsrm_write
   case NOTIFY_ARRIVAL:
     res = notify_arrival(call.args.notify_arrival_params.fds,
 			 call.args.notify_arrival_params.nfds);
+    need_reschedule = 1;
     break;
   case GET_SCHEDULER_PRIORITY:
     res = scheduler_priority;
@@ -2579,6 +2592,7 @@ static int __init zsrm_init(void)
 
   for (i=0;i<MAX_CPUS;i++){
     active_reserve_ptr[i] = NULL;
+    head_paused_reserve_ptr[i] = NULL;
   }
 
   // get do_sys_poll pointer

@@ -129,7 +129,7 @@ struct semaphore zsrmsem;
 
 int modal_scheduling  = 0; // NO by default
 
-struct zs_reserve *active_reserve_ptr = NULL;
+struct zs_reserve *active_reserve_ptr[MAX_CPUS];
 struct zs_reserve *head_paused_reserve_ptr = NULL;
 
 //timestamps
@@ -444,24 +444,24 @@ void resume_reserve(struct zs_reserve *rsv){
 }
 
 void start_accounting(struct zs_reserve *rsv){
-  if (active_reserve_ptr == rsv){
+  if (active_reserve_ptr[rsv->params.bound_to_cpu] == rsv){
     //printk("zsrm.start_acct: ptr(%d) == rsv(%d)\n",active_reserve_ptr->rid,rsv->rid);
     // only start accounting
     rsv->job_resumed_timestamp_nanos = ticks2nanos(rdtsc());
-  } else if (active_reserve_ptr == NULL){
+  } else if (active_reserve_ptr[rsv->params.bound_to_cpu] == NULL){
     //printk("zsrm.start_acct: ptr == NULL adding rsv(%d)\n",rsv->rid);
-    active_reserve_ptr = rsv;
+    active_reserve_ptr[rsv->params.bound_to_cpu] = rsv;
     rsv->next_lower_priority = NULL;
     rsv->job_resumed_timestamp_nanos = ticks2nanos(rdtsc());
-  } else if (active_reserve_ptr->params.priority < rsv->params.priority){
+  } else if (active_reserve_ptr[rsv->params.bound_to_cpu]->params.priority < rsv->params.priority){
     //printk("zsrm.start_acct: ptr(%d) preempted by rsv(%d)\n",active_reserve_ptr->rid,rsv->rid);
-    stop_accounting(active_reserve_ptr, 
+    stop_accounting(active_reserve_ptr[rsv->params.bound_to_cpu], 
 		    DONT_UPDATE_HIGHEST_PRIORITY_TASK);
-    rsv->next_lower_priority = active_reserve_ptr;
-    active_reserve_ptr = rsv;
+    rsv->next_lower_priority = active_reserve_ptr[rsv->params.bound_to_cpu];
+    active_reserve_ptr[rsv->params.bound_to_cpu] = rsv;
     rsv->job_resumed_timestamp_nanos = ticks2nanos(rdtsc());
   } else{
-    struct zs_reserve *tmp = active_reserve_ptr;
+    struct zs_reserve *tmp = active_reserve_ptr[rsv->params.bound_to_cpu];
     //printk("zsrm.start_acct: ptr(%d) top prio. rsv(%d) to queue\n",active_reserve_ptr->rid,rsv->rid);
     while (tmp->next_lower_priority != NULL && 
 	   tmp->next_lower_priority->params.priority >= rsv->params.priority)
@@ -473,15 +473,15 @@ void start_accounting(struct zs_reserve *rsv){
 
 void stop_accounting(struct zs_reserve *rsv, int update_active_highest_priority){
   unsigned long long job_stop_timestamp_nanos;
-  if (active_reserve_ptr == rsv){
+  if (active_reserve_ptr[rsv->params.bound_to_cpu] == rsv){
     //printk("zsrm.stop_acct: ptr(%d) == rsv(%d) -- stopping\n",active_reserve_ptr->rid,rsv->rid);
     job_stop_timestamp_nanos = ticks2nanos(rdtsc());
     rsv->job_executing_nanos += job_stop_timestamp_nanos - 
       rsv->job_resumed_timestamp_nanos;
     if (update_active_highest_priority){
-      active_reserve_ptr = rsv->next_lower_priority;
-      if (active_reserve_ptr != NULL)
-	start_accounting(active_reserve_ptr);
+      active_reserve_ptr[rsv->params.bound_to_cpu] = rsv->next_lower_priority;
+      if (active_reserve_ptr[rsv->params.bound_to_cpu] != NULL)
+	start_accounting(active_reserve_ptr[rsv->params.bound_to_cpu]);
     }
   } else {
     //printk("zsrm.stop_acct: ptr(%d) != rsv(%d) not top priority\n",active_reserve_ptr->rid,rsv->rid);
@@ -2563,6 +2563,7 @@ zsrm_cleanup_module(){
 static int __init zsrm_init(void)
 {
   int ret;
+  int i;
   int err = 0;
   dev_t devno;
   struct device *device = NULL;
@@ -2576,6 +2577,9 @@ static int __init zsrm_init(void)
   // initialize scheduling top
   top = -1;
 
+  for (i=0;i<MAX_CPUS;i++){
+    active_reserve_ptr[i] = NULL;
+  }
 
   // get do_sys_poll pointer
 

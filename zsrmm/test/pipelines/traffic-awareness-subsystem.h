@@ -46,7 +46,8 @@ void *air_radar_task(void *argp){
   if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset) != 0){
     printf("Error setting CPU affinity of task 1\n");
   }
-  
+
+  strcpy(cpuattr.name,"airradar");
   cpuattr.period.tv_sec = 0;
   cpuattr.period.tv_nsec= 600000000;
   cpuattr.priority = 4;
@@ -179,7 +180,8 @@ void *object_identification_task(void *argp){
   if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset) != 0){
     printf("Error setting CPU affinity of task 1\n");
   }
-  
+
+  strcpy(cpuattr.name,"object");
   cpuattr.period.tv_sec = 0;
   cpuattr.period.tv_nsec= 600000000;
   cpuattr.priority = 4;
@@ -335,7 +337,8 @@ void *track_building_task(void *argp){
   if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset) != 0){
     printf("Error setting CPU affinity of task 1\n");
   }
-  
+
+  strcpy(cpuattr.name,"track");
   cpuattr.period.tv_sec = 0;
   cpuattr.period.tv_nsec= 600000000;
   cpuattr.priority = 4;
@@ -493,7 +496,8 @@ void *traffic_warning_task(void *argp){
   if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset) != 0){
     printf("Error setting CPU affinity of task 1\n");
   }
-  
+
+  strcpy(cpuattr.name,"traffic");
   cpuattr.period.tv_sec = 0;
   cpuattr.period.tv_nsec= 600000000;
   cpuattr.priority = 4;

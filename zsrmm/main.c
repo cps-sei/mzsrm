@@ -161,11 +161,12 @@ struct zs_reserve reserve_table[MAX_RESERVES];
 struct zs_modal_reserve modal_reserve_table[MAX_MODAL_RESERVES];
 struct zs_modal_transition_entry sys_mode_transition_table[MAX_SYS_MODE_TRANSITIONS][MAX_TRANSITIONS_IN_SYS_TRANSITIONS];
 
-#ifdef __ZSRM_TSC_CLOCK__
-#define now2timespec(ts) nanos2timespec(ticks2nanos(rdtsc()),ts)
-#else
-#define now2timespec(ts) jiffies_to_timespec(jiffies,ts)
-#endif
+#define now2timespec(ts) getnstimeofday(ts)
+/* #ifdef __ZSRM_TSC_CLOCK__ */
+/* #define now2timespec(ts) nanos2timespec(ticks2nanos(rdtsc()),ts) */
+/* #else */
+/* #define now2timespec(ts) jiffies_to_timespec(jiffies,ts) */
+/* #endif */
 
 #ifdef __ARMCORE__
 
@@ -449,19 +450,19 @@ void start_accounting(struct zs_reserve *rsv){
   if (active_reserve_ptr[rsv->params.bound_to_cpu] == rsv){
     //printk("zsrm.start_acct: ptr(%d) == rsv(%d)\n",active_reserve_ptr->rid,rsv->rid);
     // only start accounting
-    rsv->job_resumed_timestamp_nanos = ticks2nanos(rdtsc());
+    rsv->job_resumed_timestamp_nanos = timestamp_ns(); //ticks2nanos(rdtsc());
   } else if (active_reserve_ptr[rsv->params.bound_to_cpu] == NULL){
     //printk("zsrm.start_acct: ptr == NULL adding rsv(%d)\n",rsv->rid);
     active_reserve_ptr[rsv->params.bound_to_cpu] = rsv;
     rsv->next_lower_priority = NULL;
-    rsv->job_resumed_timestamp_nanos = ticks2nanos(rdtsc());
+    rsv->job_resumed_timestamp_nanos = timestamp_ns(); //ticks2nanos(rdtsc());
   } else if (active_reserve_ptr[rsv->params.bound_to_cpu]->params.priority < rsv->params.priority){
     //printk("zsrm.start_acct: ptr(%d) preempted by rsv(%d)\n",active_reserve_ptr->rid,rsv->rid);
     stop_accounting(active_reserve_ptr[rsv->params.bound_to_cpu], 
 		    DONT_UPDATE_HIGHEST_PRIORITY_TASK);
     rsv->next_lower_priority = active_reserve_ptr[rsv->params.bound_to_cpu];
     active_reserve_ptr[rsv->params.bound_to_cpu] = rsv;
-    rsv->job_resumed_timestamp_nanos = ticks2nanos(rdtsc());
+    rsv->job_resumed_timestamp_nanos = timestamp_ns();//ticks2nanos(rdtsc());
   } else{
     struct zs_reserve *tmp = active_reserve_ptr[rsv->params.bound_to_cpu];
     //printk("zsrm.start_acct: ptr(%d) top prio. rsv(%d) to queue\n",active_reserve_ptr->rid,rsv->rid);
@@ -477,7 +478,7 @@ void stop_accounting(struct zs_reserve *rsv, int update_active_highest_priority)
   unsigned long long job_stop_timestamp_nanos;
   if (active_reserve_ptr[rsv->params.bound_to_cpu] == rsv){
     //printk("zsrm.stop_acct: ptr(%d) == rsv(%d) -- stopping\n",active_reserve_ptr->rid,rsv->rid);
-    job_stop_timestamp_nanos = ticks2nanos(rdtsc());
+    job_stop_timestamp_nanos = timestamp_ns();//ticks2nanos(rdtsc());
     rsv->job_executing_nanos += job_stop_timestamp_nanos - 
       rsv->job_resumed_timestamp_nanos;
     if (update_active_highest_priority){
@@ -688,7 +689,7 @@ static void scheduler_task(void *a){
 						UPDATE_HIGHEST_PRIORITY_TASK);
 
 				// measurement of enforcement
-				end_of_enforcement_ts_ns = ticks2nanos(rdtsc());
+				end_of_enforcement_ts_ns =  timestamp_ns();//ticks2nanos(rdtsc());
 				end_of_enforcement_ts_ns -= start_of_enforcement_ts_ns;
 				if (enforcement_latency_ns_avg == 0)
 				  enforcement_latency_ns_avg = end_of_enforcement_ts_ns;
@@ -801,7 +802,7 @@ enum hrtimer_restart response_time_handler(struct hrtimer *timer){
 	int rid;
 	struct task_struct *task;
 
-	start_of_enforcement_ts_ns = ticks2nanos(rdtsc());
+	start_of_enforcement_ts_ns =  timestamp_ns();//ticks2nanos(rdtsc());
 
 	spin_lock_irqsave(&zsrmlock,flags);
 	rid = timer2reserve(timer);
@@ -851,7 +852,7 @@ enum hrtimer_restart period_handler(struct hrtimer *timer){
 	now2timespec(&now);
 	now_ns = TIMESPEC2NS(&now);
 
-	arrival_ts_ns = ticks2nanos(rdtsc());
+	arrival_ts_ns =  timestamp_ns();//ticks2nanos(rdtsc());
 
 	if (prev_ns == 0){
 	  prev_ns = now_ns;
@@ -955,7 +956,7 @@ enum hrtimer_restart period_handler(struct hrtimer *timer){
 	  //jiffies_to_timespec(jiffies, &reserve_table[rid].start_of_period);
 	  now2timespec(&reserve_table[rid].start_of_period);
 	  //getnstimeofday(&sop);
-	  reserve_table[rid].local_e2e_start_of_period_nanos = ticks2nanos(rdtsc());//TIMESPEC2NS(&sop); 
+	  reserve_table[rid].local_e2e_start_of_period_nanos =  timestamp_ns();//ticks2nanos(rdtsc());//TIMESPEC2NS(&sop); 
 	  record_latest_deadline(&(reserve_table[rid].params.period));
 	  //printk("waking up process: %d at %ld:%ld\n",reserve_table[rid].pid,now.tv_sec, now.tv_nsec);
 	  reserve_table[rid].effective_priority = (reserve_table[rid].current_degraded_mode == -1) ? reserve_table[rid].params.priority :
@@ -1452,7 +1453,8 @@ void period_degradation(int rid){
   
   printk(KERN_INFO "period degradation:start\n");
 
-  elapsedns = ticks2nanos(rdtsc()) - reserve_table[rid].local_e2e_start_of_period_nanos;
+  //elapsedns =  ticks2nanos(rdtsc()) - reserve_table[rid].local_e2e_start_of_period_nanos;
+  elapsedns =  timestamp_ns() - reserve_table[rid].local_e2e_start_of_period_nanos;
   printk("period degradation debug: reserve(%d) criticality(%ld) sys_util(%ld) elapse(%lld)\n",rid, GET_EFFECTIVE_UTILITY(rid),system_utility, elapsedns);
 
   current_marginal_utility = GET_EFFECTIVE_UTILITY(rid);
@@ -1600,7 +1602,7 @@ unsigned long long get_adjusted_root_start_of_period(unsigned long long receivin
 long long calculate_zero_slack_adjustment_ns(unsigned long long start_period_ns){
   unsigned long long now_ns;
 
-  now_ns = ticks2nanos(rdtsc());
+  now_ns = timestamp_ns(); //ticks2nanos(rdtsc());
 
   return (start_period_ns - now_ns);
 }
@@ -1615,27 +1617,33 @@ int wait_for_next_leaf_stage_arrival(int rid, unsigned long *flags,
 				     unsigned int sockflags, struct sockaddr __user *addr, 
 				     int __user *addr_len){
   int len;
-  struct sched_param p;
+  /* struct sched_param p; */
   struct pipeline_header pipeline_hdr;
   unsigned long long receiving_timestamp_nanos;
   struct sockaddr_in remaddr;
   long long zero_slack_adjustment;
 
-  end_of_job_processing(rid,1);
+  //end_of_job_processing(rid,1);
   
-  p.sched_priority = scheduler_priority;
-  sched_setscheduler(current, SCHED_FIFO, &p);
+  /* p.sched_priority = scheduler_priority; */
+  /* sched_setscheduler(current, SCHED_FIFO, &p); */
+
+  end_of_job_processing(rid,1);
 
   // release zsrm locks
   spin_unlock_irqrestore(&zsrmlock, *flags);
   up(&zsrmsem);
 
-  printk("zsrmm: wait next leaf. before kernel_recvmsg\n");
+  printk("zsrmm: wait next leaf. rid(%d) exectime (%llu) before kernel_recvmsg\n",rid,
+	 reserve_table[rid].job_executing_nanos);
+
+
   len = sys_recvfromp(fd,ubuf-sizeof(struct pipeline_header), 
 		      size+sizeof(struct pipeline_header), 
 		      sockflags, addr, addr_len);
 
-  receiving_timestamp_nanos = ticks2nanos(rdtsc());
+
+  receiving_timestamp_nanos = timestamp_ns(); //ticks2nanos(rdtsc());
 
   printk("zsrmm: wait next leaf. after kernel rcvmsg\n");
 
@@ -1689,12 +1697,12 @@ int wait_for_next_stage_arrival(int rid, unsigned long *flags,
   struct pipeline_header_with_signature pipeline_hdrs; 
   struct pipeline_header pipeline_hdr;
   int len=0;
-  struct sched_param p;
+  /* struct sched_param p; */
   unsigned long long receiving_timestamp_nanos;
   struct sockaddr_in remaddr;
   long long zero_slack_adjustment;
 
-  end_of_job_processing(rid, 1);
+  //end_of_job_processing(rid, 1);
 
   if (copy_from_user(&pipeline_hdrs, (buf-sizeof(struct pipeline_header_with_signature)), 
 		     sizeof(struct pipeline_header_with_signature))){
@@ -1705,12 +1713,14 @@ int wait_for_next_stage_arrival(int rid, unsigned long *flags,
     len = -1;
   } else {
 
-    p.sched_priority = scheduler_priority;
-    sched_setscheduler(current, SCHED_FIFO, &p);    
+    /* p.sched_priority = scheduler_priority; */
+    /* sched_setscheduler(current, SCHED_FIFO, &p);     */
+
+    end_of_job_processing(rid, 1);
 
     pipeline_hdrs.header.cumm_exectime_nanos = reserve_table[rid].e2e_job_executing_nanos;
     pipeline_hdrs.header.rem_start_of_period_nanos = reserve_table[rid].local_e2e_start_of_period_nanos;
-    pipeline_hdrs.header.rem_sending_timestamp_nanos = ticks2nanos(rdtsc());
+    pipeline_hdrs.header.rem_sending_timestamp_nanos = timestamp_ns();//ticks2nanos(rdtsc());
     if (copy_to_user(buf - sizeof(struct pipeline_header_with_signature), 
 		     &pipeline_hdrs, sizeof(struct pipeline_header_with_signature))){
       return -EFAULT;
@@ -1720,10 +1730,11 @@ int wait_for_next_stage_arrival(int rid, unsigned long *flags,
     spin_unlock_irqrestore(&zsrmlock, *flags);
     up(&zsrmsem);
 
-    printk("zsrmm: wait_next_stage_arrival. sending... \n");
+    printk("zsrmm: wait_next_stage_arrival sending... \n");
     len = 0;
 
     if (!(io_mask & MIDDLE_STAGE_DONT_SEND_OUTPUT)){
+
       len = sys_sendtop(fd, buf-sizeof(struct pipeline_header), 
 			size+sizeof(struct pipeline_header), 
 			sockflags, outaddr, outaddrlen);
@@ -1746,7 +1757,7 @@ int wait_for_next_stage_arrival(int rid, unsigned long *flags,
 			    sockflags, inaddr, inaddrlen);
       }
       
-      receiving_timestamp_nanos = ticks2nanos(rdtsc());
+      receiving_timestamp_nanos = timestamp_ns();//ticks2nanos(rdtsc());
 
       printk("zsrmm: wait_next_stage_arrival: returned from recvfrom\n");
       
@@ -1794,8 +1805,7 @@ int wait_for_next_root_period(int rid, int fd, void __user *buf, size_t buflen, 
 
   end_of_job_processing(rid, 1);
   
-  printk("zsrmm: wait_next_root_period: trying to send msglen(%d)\n", 
-	 (int)buflen);
+  printk("zsrmm: wait_next_root_period: \n");
 
   if (copy_from_user(&pipeline_hdrs, (buf-sizeof(struct pipeline_header_with_signature)), 
 		     sizeof(struct pipeline_header_with_signature))){
@@ -1807,15 +1817,17 @@ int wait_for_next_root_period(int rid, int fd, void __user *buf, size_t buflen, 
   } else {
     pipeline_hdrs.header.cumm_exectime_nanos = reserve_table[rid].e2e_job_executing_nanos;
     pipeline_hdrs.header.rem_start_of_period_nanos = reserve_table[rid].local_e2e_start_of_period_nanos;
-    pipeline_hdrs.header.rem_sending_timestamp_nanos = ticks2nanos(rdtsc());
+    pipeline_hdrs.header.rem_sending_timestamp_nanos = timestamp_ns();//ticks2nanos(rdtsc());
 
     copy_to_user(buf - sizeof(struct pipeline_header_with_signature), 
 		 &pipeline_hdrs, sizeof(struct pipeline_header_with_signature));
     printk("zsrmm: wait_next_root_period: e2e_job_executing_nanos(%llu)\n",reserve_table[rid].e2e_job_executing_nanos);
     printk("zsrmm: wait_next_root_period: e2e_local_start_period(%llu)\n",reserve_table[rid].local_e2e_start_of_period_nanos);
-    if ((len = sys_sendtop(fd, buf-sizeof(struct pipeline_header), 
-			   buflen+sizeof(struct pipeline_header), 
-			   flags, addr, addrlen)) <0){
+    
+    len = sys_sendtop(fd, buf-sizeof(struct pipeline_header), 
+		      buflen+sizeof(struct pipeline_header), 
+		      flags, addr, addrlen);    
+    if (len  <0){
       printk("zsrmm: kernel_sendmsg returned %d\n",len);
       if (len == -EINVAL){
 	printk("zsrmm: kernel_sendmsg return EINVAL\n");
@@ -1824,7 +1836,7 @@ int wait_for_next_root_period(int rid, int fd, void __user *buf, size_t buflen, 
     
     set_current_state(TASK_UNINTERRUPTIBLE);
   }
-
+  
   return len;
 }
 
@@ -1849,6 +1861,9 @@ void end_of_job_processing(int rid, int is_pipeline_stage){
     //try_resume_normal_period(rid);
   }
 
+  printk("END OF JOB rsv name(%s) exectime(%llu)\n",
+	 reserve_table[rid].params.name,
+	 reserve_table[rid].job_executing_nanos);
 
   // reset the job_executing_nanos
   reserve_table[rid].job_executing_nanos=0L;
@@ -1861,7 +1876,7 @@ int start_of_job_processing(int rid, long long zero_slack_adjustment_ns){
   struct sched_param p;
   struct timespec adjusted_zs_instant;
   unsigned long long zs_instant_ns;
-  struct task_struct *task;
+  /* struct task_struct *task; */
 
   adjusted_zs_instant.tv_sec = reserve_table[rid].params.zs_instant.tv_sec;
   adjusted_zs_instant.tv_nsec = reserve_table[rid].params.zs_instant.tv_nsec;
@@ -1896,15 +1911,22 @@ int start_of_job_processing(int rid, long long zero_slack_adjustment_ns){
     reserve_table[rid].execution_status = EXEC_RUNNING;    
     start_accounting(&reserve_table[rid]);
 
-    p.sched_priority = reserve_table[rid].effective_priority;
-    //sched_setscheduler(current, SCHED_FIFO, &p);
-    task = gettask(reserve_table[rid].pid);
-    if (task != NULL){
-      sched_setscheduler(task, SCHED_FIFO, &p);
-      set_tsk_need_resched(task);
-    } else {
-      printk("zsrmm.start_of_job_processing: task == NULL");
-    }
+    p.sched_priority = 0;//reserve_table[rid].effective_priority;
+
+    /* sched_setscheduler(current, SCHED_FIFO, &p); */
+    /* task = gettask(reserve_table[rid].pid); */
+    /* if (task != NULL){ */
+    /*   sched_setscheduler(task, SCHED_FIFO, &p); */
+    /*   printk("zsrmm.start of job: reserve(%s) effective priority %d\n",reserve_table[rid].params.name,reserve_table[rid].effective_priority ); */
+    /*   //set_tsk_need_resched(task); */
+    /* } else { */
+    /*   printk("zsrmm.start_of_job_processing: task == NULL"); */
+    /* } */
+  } else {
+    printk("start of job processing rid name(%s): NOT SETTING PRIORITY mode enforced(%d), exec_status(0x%x)\n",
+	   reserve_table[rid].params.name,
+	   reserve_table[rid].critical_utility_mode_enforced,
+	   reserve_table[rid].execution_status);
   }
 
   return 0;
@@ -1949,7 +1971,7 @@ int wait_for_next_arrival(int rid, struct pollfd __user *fds, unsigned int nfds,
   
   do_sys_pollp(fds, (unsigned int) 1, NULL);
 
-  now_ns = ticks2nanos(rdtsc());
+  now_ns = timestamp_ns();//ticks2nanos(rdtsc());
 
   // reacquire zsrm locks
   down(&zsrmsem);
@@ -2132,6 +2154,7 @@ int notify_arrival(int __user *fds, int nfds){
 	} else {
 	  printk("zsrmm.notify_arrival: rid(%d) NOT DEFERRED\n",j);
 	}
+	break;
       }
     }
   }
@@ -2142,6 +2165,7 @@ void init(void){
   int i,j;
   
   for (i=0;i<MAX_RESERVES;i++){
+    reserve_table[i].params.name[0]='\0';
     reserve_table[i].rid=i;
     reserve_table[i].params.priority = -1; // mark as empty
     reserve_table[i].params.enforcement_mask = 0;
@@ -2233,6 +2257,8 @@ static ssize_t zsrm_write
       memcpy(&reserve_table[i].params,
 	     &(call.args.reserve_parameters), 
 	     sizeof(struct zs_reserve_params));
+      reserve_table[i].effective_priority = reserve_table[i].params.priority;
+      reserve_table[i].params.name[RESERVE_NAME_LEN-1]='\0';
       reserve_table[i].nominal_exectime_nanos = 
 	reserve_table[i].params.execution_time.tv_sec * 1000000000L +
 	reserve_table[i].params.execution_time.tv_nsec;
@@ -2390,13 +2416,9 @@ static ssize_t zsrm_write
     need_reschedule = 1;
     break;
   case WAIT_NEXT_LEAF_STAGE_ARRIVAL:
-    // ensure that this is a leaf stage reserve
     if (!(reserve_table[call.args.wait_next_leaf_stage_arrival_params.reserveid].params.reserve_type & PIPELINE_STAGE_LEAF)){
       printk("zsrmm: wait_next_leaf_stage_arrival call on wrong reserve (rid:%d) type(%X)\n",call.args.wait_next_leaf_stage_arrival_params.reserveid, reserve_table[call.args.wait_next_leaf_stage_arrival_params.reserveid].params.reserve_type);
       res = -1;
-    /* } else if (call.args.wait_next_leaf_stage_arrival_params.usrindatalen >  */
-    /* 	reserve_table[call.args.wait_next_leaf_stage_arrival_params.reserveid].params.indatalen){ */
-    /*   res = -1; */
     } else {
       res  = wait_for_next_leaf_stage_arrival(call.args.wait_next_leaf_stage_arrival_params.reserveid, &flags,
 					      call.args.wait_next_leaf_stage_arrival_params.fd,
@@ -2405,20 +2427,8 @@ static ssize_t zsrm_write
 					      call.args.wait_next_leaf_stage_arrival_params.flags,
 					      call.args.wait_next_leaf_stage_arrival_params.addr,
 					      call.args.wait_next_leaf_stage_arrival_params.addr_len);
-      if (res > 0){
-	// received pipeline metadata + usr data. Adjust len
-	//res = res - sizeof(struct pipeline_header);
-	//printk("zsrmm: wait next leaf stage. copying %d bytes to user\n",res);
-	// copy to usr buffer
-	/*
-	if (copy_to_user(call.args.wait_next_leaf_stage_arrival_params.usrindata, 
-			  ((char *)reserve_table[call.args.wait_next_leaf_stage_arrival_params.reserveid].indata), res) != 0){
-	  // could not copy all
-	  res = -1;
-	} else {
-	*/
-	  need_reschedule = 1;
-	  //}
+      if (res >= 0){
+	need_reschedule = 1;
       }
     }
     break;

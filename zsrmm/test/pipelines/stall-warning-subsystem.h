@@ -46,7 +46,8 @@ void *airspeed_task(void *argp){
   if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset) != 0){
     printf("Error setting CPU affinity of task 1\n");
   }
-  
+
+  strcpy(cpuattr.name,"airspeed");
   cpuattr.period.tv_sec = 4;
   cpuattr.period.tv_nsec= 0;
   cpuattr.priority = 1;
@@ -179,7 +180,8 @@ void *lift_task(void *argp){
   if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset) != 0){
     printf("Error setting CPU affinity of task 1\n");
   }
-  
+
+  strcpy(cpuattr.name,"lift");
   cpuattr.period.tv_sec = 4;
   cpuattr.period.tv_nsec= 0;
   cpuattr.priority = 1;
@@ -336,6 +338,7 @@ void *stall_task(void *argp){
     printf("Error setting CPU affinity of task 1\n");
   }
   
+  strcpy(cpuattr.name,"stall");
   cpuattr.period.tv_sec = 4;
   cpuattr.period.tv_nsec= 0;
   cpuattr.priority = 1;
@@ -493,7 +496,8 @@ void *angle_task(void *argp){
   if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset) != 0){
     printf("Error setting CPU affinity of task 1\n");
   }
-  
+
+  strcpy(cpuattr.name,"angle");
   cpuattr.period.tv_sec = 4;
   cpuattr.period.tv_nsec= 0;
   cpuattr.priority = 1;

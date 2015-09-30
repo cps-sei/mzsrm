@@ -38,6 +38,7 @@ Carnegie Mellon® is registered in the U.S. Patent and Trademark Office by Carne
 DM-0000891
 */
 
+#define _GNU_SOURCE
 #include <stdio.h>
 #include "../zsrm.h"
 #include "zsmutex.h"
@@ -51,6 +52,7 @@ DM-0000891
 #include <sys/unistd.h>
 #include <errno.h>
 #include <sys/epoll.h>
+#include <pthread.h>
 
 int zs_open_sched(){
 	int fd;
@@ -500,6 +502,14 @@ void *poll_server_task(void *argp){
     return NULL;
   }
   
+  cpu_set_t cpuset;
+  CPU_ZERO(&cpuset);
+  CPU_SET(0,&cpuset);
+
+  if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset) != 0){
+    printf("Error setting CPU affinity of task 1\n");
+  }
+
   while (!request_poll_server_shutdown){
     ret = epoll_wait(epollfd, events, p->nfds, -1);
     if (ret <0){

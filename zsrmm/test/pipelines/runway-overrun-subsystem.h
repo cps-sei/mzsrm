@@ -47,6 +47,7 @@ void *gps_position_task(void *argp){
     printf("Error setting CPU affinity of task 1\n");
   }
   
+  strcpy(cpuattr.name,"gps");
   cpuattr.period.tv_sec = 1;
   cpuattr.period.tv_nsec= 0;
   cpuattr.priority = 3;
@@ -179,7 +180,8 @@ void *stop_distance_task(void *argp){
   if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset) != 0){
     printf("Error setting CPU affinity of task 1\n");
   }
-  
+
+  strcpy(cpuattr.name,"distance");
   cpuattr.period.tv_sec = 1;
   cpuattr.period.tv_nsec= 0;
   cpuattr.priority = 3;
@@ -335,7 +337,8 @@ void *stop_location_task(void *argp){
   if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset) != 0){
     printf("Error setting CPU affinity of task 1\n");
   }
-  
+
+  strcpy(cpuattr.name,"location");
   cpuattr.period.tv_sec = 1;
   cpuattr.period.tv_nsec= 0;
   cpuattr.priority = 3;
@@ -493,7 +496,8 @@ void *virtual_runway_task(void *argp){
   if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset) != 0){
     printf("Error setting CPU affinity of task 1\n");
   }
-  
+
+  strcpy(cpuattr.name,"runway");
   cpuattr.period.tv_sec = 1;
   cpuattr.period.tv_nsec= 0;
   cpuattr.priority = 3;

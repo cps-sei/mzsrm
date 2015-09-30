@@ -178,12 +178,14 @@ DM-0000891
 /* END OF RESERVE TYPE DEFINITIONS
  */
 
+#define RESERVE_NAME_LEN 50
 
 #define TIMESPEC2NS(ts) (((unsigned long long) (ts)->tv_sec) * 1000000000ll + (unsigned long long) (ts)->tv_nsec)
 
 #define GET_EFFECTIVE_UTILITY(i) (reserve_table[i].current_degraded_mode == -1 ? reserve_table[i].params.overloaded_marginal_utility: reserve_table[i].params.degraded_marginal_utility[reserve_table[i].current_degraded_mode][1])
 
 struct zs_reserve_params{
+  char name[RESERVE_NAME_LEN];
   struct timespec period;
   struct timespec execution_time;
   struct timespec overload_execution_time;

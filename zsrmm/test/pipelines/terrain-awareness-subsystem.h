@@ -46,7 +46,8 @@ void *ground_radar_task(void *argp){
   if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset) != 0){
     printf("Error setting CPU affinity of task 1\n");
   }
-  
+
+  strcpy(cpuattr.name,"groundradar");
   cpuattr.period.tv_sec = 2;
   cpuattr.period.tv_nsec= 0;
   cpuattr.priority = 2;
@@ -179,7 +180,8 @@ void *terrain_distance_task(void *argp){
   if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset) != 0){
     printf("Error setting CPU affinity of task 1\n");
   }
-  
+
+  strcpy(cpuattr.name,"distance");
   cpuattr.period.tv_sec = 2;
   cpuattr.period.tv_nsec= 0;
   cpuattr.priority = 2;
@@ -335,7 +337,8 @@ void *time_to_terrain_task(void *argp){
   if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset) != 0){
     printf("Error setting CPU affinity of task 1\n");
   }
-  
+
+  strcpy(cpuattr.name,"time");
   cpuattr.period.tv_sec = 2;
   cpuattr.period.tv_nsec= 0;
   cpuattr.priority = 2;
@@ -412,7 +415,7 @@ void *time_to_terrain_task(void *argp){
     io_flag = 0;
     if (firsttime){
       busy_timestamped(300,timestamps_nsf, MAX_TIMESTAMPS,&bufidxf);
-      firsttime=0;
+      //firsttime=0;
     } else {
       busy_timestamped(200,timestamps_nsf, MAX_TIMESTAMPS,&bufidxf);
     }    
@@ -499,7 +502,8 @@ void *terrain_warning_task(void *argp){
   if (pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset) != 0){
     printf("Error setting CPU affinity of task 1\n");
   }
-  
+
+  strcpy(cpuattr.name,"terrain");
   cpuattr.period.tv_sec = 2;
   cpuattr.period.tv_nsec= 0;
   cpuattr.priority = 2;

@@ -15,6 +15,7 @@
 #include <arpa/inet.h>
 #include <string.h>
 #include <poll.h>
+#include <string.h>
 
 
 #include "../busy.h"

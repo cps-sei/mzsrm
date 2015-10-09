@@ -1,5 +1,5 @@
 /***********************
- * RUNWAY OVERRNUN SYSTEM*
+ * RUNWAY OVERRUN SYSTEM*
  ***********************/
 void *gps_position_task(void *argp){
   struct zs_reserve_params cpuattr;
@@ -14,6 +14,7 @@ void *gps_position_task(void *argp){
   int fd;
   struct task_stage_params *stage_paramsp;
   int io_flag;
+  struct sched_param p;
   
   stage_paramsp = (struct task_stage_params *)argp;
 
@@ -48,23 +49,23 @@ void *gps_position_task(void *argp){
   }
   
   strcpy(cpuattr.name,"gps");
-  cpuattr.period.tv_sec = 1;
-  cpuattr.period.tv_nsec= 0;
+  cpuattr.period.tv_sec = 3;
+  cpuattr.period.tv_nsec= 174000000;
   cpuattr.priority = 3;
   cpuattr.execution_time.tv_sec = 0;
   cpuattr.execution_time.tv_nsec = 100000000;
   cpuattr.overload_execution_time.tv_sec = 0;
   cpuattr.overload_execution_time.tv_nsec = 100000000;
-  cpuattr.zs_instant.tv_sec=1;
-  cpuattr.zs_instant.tv_nsec=0;
+  cpuattr.zs_instant.tv_sec=3;
+  cpuattr.zs_instant.tv_nsec=174000000;
   cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
   cpuattr.reserve_type = CRITICALITY_RESERVE | PIPELINE_STAGE_ROOT;
   cpuattr.enforcement_mask = 0;//DONT_ENFORCE_ZERO_SLACK;
   cpuattr.e2e_execution_time.tv_sec = 0;
-  cpuattr.e2e_execution_time.tv_nsec = 400000000;
-  cpuattr.e2e_overload_execution_time.tv_sec = 0;
-  cpuattr.e2e_overload_execution_time.tv_nsec = 400000000;
+  cpuattr.e2e_execution_time.tv_nsec = 952000000;
+  cpuattr.e2e_overload_execution_time.tv_sec = 1;
+  cpuattr.e2e_overload_execution_time.tv_nsec = 188000000;
   cpuattr.criticality = 2;
   cpuattr.normal_marginal_utility = 1;
   cpuattr.overloaded_marginal_utility = 1;
@@ -85,6 +86,13 @@ void *gps_position_task(void *argp){
 
   rid = zs_create_reserve(sched,&cpuattr);
 
+  p.sched_priority = 30;
+  if (pthread_setschedparam(pthread_self(), SCHED_FIFO,&p)<0){
+    printf("error setting fixed priority\n");
+    return NULL;
+  }
+
+
   struct sembuf sops;
   sops.sem_num=0;
   sops.sem_op = -1; // down
@@ -93,11 +101,13 @@ void *gps_position_task(void *argp){
     printf("error on sync star sem down\n");
   }
 
+  usleep(1300000);
+
   zs_attach_reserve(sched,rid,gettid());
 
 
   for (i=0;i<10;i++){
-    busy_timestamped(100,timestamps_ns5, MAX_TIMESTAMPS,&bufidx5);
+    busy_timestamped(297,timestamps_ns5, MAX_TIMESTAMPS,&bufidx5);
     sprintf(buf,"msg[%d]",i);
     if ((err = zs_wait_next_root_period(sched,rid,fd, 
 					buf ,strlen(buf)+1, 
@@ -182,23 +192,23 @@ void *stop_distance_task(void *argp){
   }
 
   strcpy(cpuattr.name,"distance");
-  cpuattr.period.tv_sec = 1;
-  cpuattr.period.tv_nsec= 0;
+  cpuattr.period.tv_sec = 3;
+  cpuattr.period.tv_nsec= 174000000;
   cpuattr.priority = 3;
   cpuattr.execution_time.tv_sec = 0;
   cpuattr.execution_time.tv_nsec = 100000000;
   cpuattr.overload_execution_time.tv_sec = 0;
   cpuattr.overload_execution_time.tv_nsec = 100000000;
-  cpuattr.zs_instant.tv_sec=1;
-  cpuattr.zs_instant.tv_nsec=0;
+  cpuattr.zs_instant.tv_sec=3;
+  cpuattr.zs_instant.tv_nsec=174000000;
   cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
   cpuattr.reserve_type = CRITICALITY_RESERVE | PIPELINE_STAGE_MIDDLE | APERIODIC_ARRIVAL;
   cpuattr.enforcement_mask = 0;//DONT_ENFORCE_ZERO_SLACK;
   cpuattr.e2e_execution_time.tv_sec = 0;
-  cpuattr.e2e_execution_time.tv_nsec = 400000000;
-  cpuattr.e2e_overload_execution_time.tv_sec = 0;
-  cpuattr.e2e_overload_execution_time.tv_nsec = 400000000;
+  cpuattr.e2e_execution_time.tv_nsec = 952000000;
+  cpuattr.e2e_overload_execution_time.tv_sec = 1;
+  cpuattr.e2e_overload_execution_time.tv_nsec = 188000000;
   cpuattr.criticality = 2;
   cpuattr.normal_marginal_utility = 2;
   cpuattr.overloaded_marginal_utility = 2;
@@ -256,7 +266,7 @@ void *stop_distance_task(void *argp){
       sprintf(buf,"msg[%d]",i++);
     }
     io_flag = 0;
-    busy_timestamped(100,timestamps_ns6, MAX_TIMESTAMPS,&bufidx6);
+    busy_timestamped(297,timestamps_ns6, MAX_TIMESTAMPS,&bufidx6);
   }
 
   sprintf(buf,"bye");
@@ -339,23 +349,23 @@ void *stop_location_task(void *argp){
   }
 
   strcpy(cpuattr.name,"location");
-  cpuattr.period.tv_sec = 1;
-  cpuattr.period.tv_nsec= 0;
+  cpuattr.period.tv_sec = 3;
+  cpuattr.period.tv_nsec= 174000000;
   cpuattr.priority = 3;
   cpuattr.execution_time.tv_sec = 0;
   cpuattr.execution_time.tv_nsec = 100000000;
   cpuattr.overload_execution_time.tv_sec = 0;
   cpuattr.overload_execution_time.tv_nsec = 100000000;
-  cpuattr.zs_instant.tv_sec=1;
-  cpuattr.zs_instant.tv_nsec=0;
+  cpuattr.zs_instant.tv_sec=3;
+  cpuattr.zs_instant.tv_nsec=174000000;
   cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
   cpuattr.reserve_type = CRITICALITY_RESERVE | PIPELINE_STAGE_MIDDLE | APERIODIC_ARRIVAL;
   cpuattr.enforcement_mask = 0;//DONT_ENFORCE_ZERO_SLACK;
   cpuattr.e2e_execution_time.tv_sec = 0;
-  cpuattr.e2e_execution_time.tv_nsec = 400000000;
-  cpuattr.e2e_overload_execution_time.tv_sec = 0;
-  cpuattr.e2e_overload_execution_time.tv_nsec = 400000000;
+  cpuattr.e2e_execution_time.tv_nsec = 952000000;
+  cpuattr.e2e_overload_execution_time.tv_sec = 1;
+  cpuattr.e2e_overload_execution_time.tv_nsec = 188000000;
   cpuattr.criticality = 2;
   cpuattr.normal_marginal_utility = 2;
   cpuattr.overloaded_marginal_utility = 2;
@@ -412,7 +422,7 @@ void *stop_location_task(void *argp){
       sprintf(buf,"msg[%d]",i++);
     }
     io_flag = 0;
-    busy_timestamped(100,timestamps_ns7, MAX_TIMESTAMPS,&bufidx7);
+    busy_timestamped(297,timestamps_ns7, MAX_TIMESTAMPS,&bufidx7);
   }
 
   sprintf(buf,"bye");
@@ -498,23 +508,23 @@ void *virtual_runway_task(void *argp){
   }
 
   strcpy(cpuattr.name,"runway");
-  cpuattr.period.tv_sec = 1;
-  cpuattr.period.tv_nsec= 0;
+  cpuattr.period.tv_sec = 3;
+  cpuattr.period.tv_nsec= 174000000;
   cpuattr.priority = 3;
   cpuattr.execution_time.tv_sec = 0;
   cpuattr.execution_time.tv_nsec = 100000000;
   cpuattr.overload_execution_time.tv_sec = 0;
   cpuattr.overload_execution_time.tv_nsec = 100000000;
-  cpuattr.zs_instant.tv_sec=1;
-  cpuattr.zs_instant.tv_nsec=0;
+  cpuattr.zs_instant.tv_sec=3;
+  cpuattr.zs_instant.tv_nsec=174000000;
   cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
   cpuattr.reserve_type = CRITICALITY_RESERVE | PIPELINE_STAGE_LEAF | APERIODIC_ARRIVAL;
   cpuattr.enforcement_mask = 0;//DONT_ENFORCE_ZERO_SLACK;
   cpuattr.e2e_execution_time.tv_sec = 0;
-  cpuattr.e2e_execution_time.tv_nsec = 400000000;
-  cpuattr.e2e_overload_execution_time.tv_sec = 0;
-  cpuattr.e2e_overload_execution_time.tv_nsec = 400000000;
+  cpuattr.e2e_execution_time.tv_nsec = 952000000;
+  cpuattr.e2e_overload_execution_time.tv_sec = 1;
+  cpuattr.e2e_overload_execution_time.tv_nsec = 188000000;
   cpuattr.criticality = 2;
   cpuattr.normal_marginal_utility = 2;
   cpuattr.overloaded_marginal_utility = 2;
@@ -562,7 +572,7 @@ void *virtual_runway_task(void *argp){
       break;
     }
     printf("virtual-runway received[%s] from addr(%s)\n",buf,inet_ntoa(remaddr.sin_addr));
-    busy_timestamped(100,timestamps_ns8, MAX_TIMESTAMPS,&bufidx8);
+    busy_timestamped(297,timestamps_ns8, MAX_TIMESTAMPS,&bufidx8);
   }
 
   zs_free_msg_packet(sched, buf);

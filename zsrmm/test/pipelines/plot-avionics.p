@@ -1,17 +1,22 @@
 unset ytics
 #unset xtics
-set xtics out
-set xtics rotate font ",6" 0, 500, 11000
-set xtics format ''
+#set xtics out
+#set xtics rotate font ",6" 0, 500, 16000
+#set xtics format ''
 set mxtics 5
 set yrange [0.8:1.1]
-set xrange [0:11000]
+set xrange [0:16000]
 set terminal pdf
 set output 'pipeline-plot.pdf'
 set tmargin 0
 set bmargin 0
 set key font ",5"
-set multiplot layout 5,1 title "Avionics Example" font ",6"
+#set multiplot layout 5,1 title "Avionics Example" font ",6"
+set multiplot layout 5,1 font ",6"
+set xtics out
+set xtics nomirror
+set xtics rotate font ",6" 0, 500, 16000
+set xtics format ''
 set ylabel "CPU 0"
 set key horiz
 set key center top

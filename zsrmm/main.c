@@ -388,10 +388,10 @@ void kill_reserve(struct zs_reserve *rsv){
     p.sched_priority = rsv->effective_priority;
     sched_setscheduler(task, SCHED_FIFO, &p);    
     printk("zsrmm.kill_reserve: setting rid(%d) %s TASK_UNINTERRUPTIBLE\n",rsv->rid,type);
-    /* set_task_state(task, TASK_UNINTERRUPTIBLE); */
-    /* set_tsk_need_resched(task); */
-    rsv->request_stop = 1;
-    push_to_reschedule(rsv->rid);
+    set_task_state(task, TASK_UNINTERRUPTIBLE);
+    set_tsk_need_resched(task);
+    /* rsv->request_stop = 1; */
+    /* push_to_reschedule(rsv->rid); */
   } else {
     printk("zsrmm.kill_reserve: task not found\n");
   }
@@ -1637,11 +1637,9 @@ int wait_for_next_leaf_stage_arrival(int rid, unsigned long *flags,
   printk("zsrmm: wait next leaf. rid(%d) exectime (%llu) before kernel_recvmsg\n",rid,
 	 reserve_table[rid].job_executing_nanos);
 
-
   len = sys_recvfromp(fd,ubuf-sizeof(struct pipeline_header), 
 		      size+sizeof(struct pipeline_header), 
 		      sockflags, addr, addr_len);
-
 
   receiving_timestamp_nanos = timestamp_ns(); //ticks2nanos(rdtsc());
 

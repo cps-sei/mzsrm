@@ -14,6 +14,7 @@ void *airspeed_task(void *argp){
   int fd;
   struct task_stage_params *stage_paramsp;
   int io_flag;
+  struct sched_param p;
   
   stage_paramsp = (struct task_stage_params *)argp;
 
@@ -48,23 +49,23 @@ void *airspeed_task(void *argp){
   }
 
   strcpy(cpuattr.name,"airspeed");
-  cpuattr.period.tv_sec = 4;
-  cpuattr.period.tv_nsec= 0;
+  cpuattr.period.tv_sec = 14;
+  cpuattr.period.tv_nsec= 534000000;
   cpuattr.priority = 1;
   cpuattr.execution_time.tv_sec = 0;
   cpuattr.execution_time.tv_nsec = 100000000;
   cpuattr.overload_execution_time.tv_sec = 0;
   cpuattr.overload_execution_time.tv_nsec = 100000000;
-  cpuattr.zs_instant.tv_sec=3;
-  cpuattr.zs_instant.tv_nsec=800000000;
+  cpuattr.zs_instant.tv_sec=8;//11 ;
+  cpuattr.zs_instant.tv_nsec=0;//278000000;
   cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
   cpuattr.reserve_type = CRITICALITY_RESERVE | PIPELINE_STAGE_ROOT;
   cpuattr.enforcement_mask = 0;//DONT_ENFORCE_ZERO_SLACK;
-  cpuattr.e2e_execution_time.tv_sec = 0;
-  cpuattr.e2e_execution_time.tv_nsec = 500000000;
-  cpuattr.e2e_overload_execution_time.tv_sec = 0;
-  cpuattr.e2e_overload_execution_time.tv_nsec = 800000000;
+  cpuattr.e2e_execution_time.tv_sec = 4;
+  cpuattr.e2e_execution_time.tv_nsec = 360000000;
+  cpuattr.e2e_overload_execution_time.tv_sec = 5;
+  cpuattr.e2e_overload_execution_time.tv_nsec = 448000000;
   cpuattr.criticality = 4;
   cpuattr.normal_marginal_utility = 4;
   cpuattr.overloaded_marginal_utility = 4;
@@ -85,6 +86,13 @@ void *airspeed_task(void *argp){
 
   rid = zs_create_reserve(sched,&cpuattr);
 
+
+  p.sched_priority = 30;
+  if (pthread_setschedparam(pthread_self(), SCHED_FIFO,&p)<0){
+    printf("error setting fixed priority\n");
+    return NULL;
+  }
+
   struct sembuf sops;
   sops.sem_num=0;
   sops.sem_op = -1; // down
@@ -93,11 +101,20 @@ void *airspeed_task(void *argp){
     printf("error on sync star sem down\n");
   }
 
+  // wait to change phasing
+  //usleep(500000);
+
   zs_attach_reserve(sched,rid,gettid());
 
+  int firsttime =1;
 
   for (i=0;i<10;i++){
-    busy_timestamped(100,timestamps_ns1, MAX_TIMESTAMPS,&bufidx1);
+    if (firsttime){
+      firsttime=0;
+      busy_timestamped(1362,timestamps_ns1, MAX_TIMESTAMPS,&bufidx1);
+    } else {
+      busy_timestamped(1362,timestamps_ns1, MAX_TIMESTAMPS,&bufidx1);
+    }
     sprintf(buf,"msg[%d]",i);
     if ((err = zs_wait_next_root_period(sched,rid,fd, 
 					buf ,strlen(buf)+1, 
@@ -182,23 +199,23 @@ void *lift_task(void *argp){
   }
 
   strcpy(cpuattr.name,"lift");
-  cpuattr.period.tv_sec = 4;
-  cpuattr.period.tv_nsec= 0;
+  cpuattr.period.tv_sec = 14;
+  cpuattr.period.tv_nsec= 534000000;
   cpuattr.priority = 1;
   cpuattr.execution_time.tv_sec = 0;
   cpuattr.execution_time.tv_nsec = 100000000;
   cpuattr.overload_execution_time.tv_sec = 0;
   cpuattr.overload_execution_time.tv_nsec = 100000000;
-  cpuattr.zs_instant.tv_sec=3;
-  cpuattr.zs_instant.tv_nsec=800000000;
+  cpuattr.zs_instant.tv_sec=8;//11;
+  cpuattr.zs_instant.tv_nsec=0;//278000000;
   cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
   cpuattr.reserve_type = CRITICALITY_RESERVE | PIPELINE_STAGE_MIDDLE | APERIODIC_ARRIVAL;
   cpuattr.enforcement_mask = 0;//DONT_ENFORCE_ZERO_SLACK;
-  cpuattr.e2e_execution_time.tv_sec = 0;
-  cpuattr.e2e_execution_time.tv_nsec = 500000000;
-  cpuattr.e2e_overload_execution_time.tv_sec = 0;
-  cpuattr.e2e_overload_execution_time.tv_nsec = 800000000;
+  cpuattr.e2e_execution_time.tv_sec = 4;
+  cpuattr.e2e_execution_time.tv_nsec = 360000000;
+  cpuattr.e2e_overload_execution_time.tv_sec = 5;
+  cpuattr.e2e_overload_execution_time.tv_nsec = 448000000;
   cpuattr.criticality = 4;
   cpuattr.normal_marginal_utility = 4;
   cpuattr.overloaded_marginal_utility = 4;
@@ -256,7 +273,7 @@ void *lift_task(void *argp){
       sprintf(buf,"msg[%d]",i++);
     }
     io_flag = 0;
-    busy_timestamped(100,timestamps_ns2, MAX_TIMESTAMPS,&bufidx2);
+    busy_timestamped(1362,timestamps_ns2, MAX_TIMESTAMPS,&bufidx2);
   }
 
   sprintf(buf,"bye");
@@ -339,23 +356,23 @@ void *stall_task(void *argp){
   }
   
   strcpy(cpuattr.name,"stall");
-  cpuattr.period.tv_sec = 4;
-  cpuattr.period.tv_nsec= 0;
+  cpuattr.period.tv_sec = 14;
+  cpuattr.period.tv_nsec= 534000000;
   cpuattr.priority = 1;
   cpuattr.execution_time.tv_sec = 0;
   cpuattr.execution_time.tv_nsec = 100000000;
   cpuattr.overload_execution_time.tv_sec = 0;
   cpuattr.overload_execution_time.tv_nsec = 100000000;
-  cpuattr.zs_instant.tv_sec=3;
-  cpuattr.zs_instant.tv_nsec=800000000;
+  cpuattr.zs_instant.tv_sec=8;//11;
+  cpuattr.zs_instant.tv_nsec=0;//278000000;
   cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
   cpuattr.reserve_type = CRITICALITY_RESERVE | PIPELINE_STAGE_MIDDLE | APERIODIC_ARRIVAL;
   cpuattr.enforcement_mask = 0;//DONT_ENFORCE_ZERO_SLACK;
-  cpuattr.e2e_execution_time.tv_sec = 0;
-  cpuattr.e2e_execution_time.tv_nsec = 500000000;
-  cpuattr.e2e_overload_execution_time.tv_sec = 0;
-  cpuattr.e2e_overload_execution_time.tv_nsec = 800000000;
+  cpuattr.e2e_execution_time.tv_sec = 4;
+  cpuattr.e2e_execution_time.tv_nsec = 360000000;
+  cpuattr.e2e_overload_execution_time.tv_sec = 5;
+  cpuattr.e2e_overload_execution_time.tv_nsec = 448000000;
   cpuattr.criticality = 4;
   cpuattr.normal_marginal_utility = 4;
   cpuattr.overloaded_marginal_utility = 4;
@@ -391,6 +408,7 @@ void *stall_task(void *argp){
 
   io_flag = MIDDLE_STAGE_DONT_SEND_OUTPUT;
   i=0;
+  int firsttime=1;
   buf[0] = '\0';
   while (strstr(buf,"bye") == NULL){
     remaddr_len = sizeof (outaddr);
@@ -412,7 +430,12 @@ void *stall_task(void *argp){
       sprintf(buf,"msg[%d]",i++);
     }
     io_flag = 0;
-    busy_timestamped(100,timestamps_ns3, MAX_TIMESTAMPS,&bufidx3);
+    if (firsttime){
+      firsttime=0;
+      busy_timestamped(1362,timestamps_ns3, MAX_TIMESTAMPS,&bufidx3);
+    } else {
+      busy_timestamped(1362,timestamps_ns3, MAX_TIMESTAMPS,&bufidx3);
+    }
   }
 
   sprintf(buf,"bye");
@@ -461,8 +484,6 @@ void *angle_task(void *argp){
 
   printf("angle: params: destination(%s:%d) myport(%d)\n",stage_paramsp->destination_address, stage_paramsp->destination_port, stage_paramsp->myport);
 
-  //MISSING THE BIND!!!!!!
-
   if ((fd = socket(AF_INET, SOCK_DGRAM, 0)) <0){
     perror("could not create socket\n");
     return NULL;
@@ -498,23 +519,23 @@ void *angle_task(void *argp){
   }
 
   strcpy(cpuattr.name,"angle");
-  cpuattr.period.tv_sec = 4;
-  cpuattr.period.tv_nsec= 0;
+  cpuattr.period.tv_sec =  14;
+  cpuattr.period.tv_nsec= 534000000;
   cpuattr.priority = 1;
   cpuattr.execution_time.tv_sec = 0;
-  cpuattr.execution_time.tv_nsec = 200000000;
+  cpuattr.execution_time.tv_nsec = 100000000;
   cpuattr.overload_execution_time.tv_sec = 0;
   cpuattr.overload_execution_time.tv_nsec = 500000000;
-  cpuattr.zs_instant.tv_sec=3;
-  cpuattr.zs_instant.tv_nsec=800000000;
+  cpuattr.zs_instant.tv_sec=8;//11;
+  cpuattr.zs_instant.tv_nsec=0;//278000000;
   cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
   cpuattr.reserve_type = CRITICALITY_RESERVE | PIPELINE_STAGE_LEAF | APERIODIC_ARRIVAL;
-  cpuattr.enforcement_mask = 0;//DONT_ENFORCE_ZERO_SLACK;
-  cpuattr.e2e_execution_time.tv_sec = 0;
-  cpuattr.e2e_execution_time.tv_nsec = 500000000;
-  cpuattr.e2e_overload_execution_time.tv_sec = 0;
-  cpuattr.e2e_overload_execution_time.tv_nsec = 800000000;
+  cpuattr.enforcement_mask = 0;//DONTENFORCE_ZERO_SLACK;
+  cpuattr.e2e_execution_time.tv_sec = 4;
+  cpuattr.e2e_execution_time.tv_nsec = 360000000;
+  cpuattr.e2e_overload_execution_time.tv_sec = 5;
+  cpuattr.e2e_overload_execution_time.tv_nsec = 448000000;
   cpuattr.criticality = 4;
   cpuattr.normal_marginal_utility = 4;
   cpuattr.overloaded_marginal_utility = 4;
@@ -565,9 +586,9 @@ void *angle_task(void *argp){
     printf("angle received[%s] from addr(%s)\n",buf,inet_ntoa(remaddr.sin_addr));
     if (firsttime){
       firsttime=0;
-      busy_timestamped(500,timestamps_ns4, MAX_TIMESTAMPS,&bufidx4);
+      busy_timestamped(1362,timestamps_ns4, MAX_TIMESTAMPS,&bufidx4);
     } else {
-      busy_timestamped(200,timestamps_ns4, MAX_TIMESTAMPS,&bufidx4);
+      busy_timestamped(1362,timestamps_ns4, MAX_TIMESTAMPS,&bufidx4);
     }
   }
 

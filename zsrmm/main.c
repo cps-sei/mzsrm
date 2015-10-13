@@ -142,6 +142,12 @@ unsigned long long trans_into_susp_ts_ns = 0LL;
 unsigned long long trans_from_susp_ts_ns = 0LL;
 unsigned long long start_of_enforcement_ts_ns =0LL;
 unsigned long long end_of_enforcement_ts_ns = 0LL;
+unsigned long long start_of_defer_ts_ns = 0LL;
+unsigned long long end_of_defer_ts_ns = 0LL;
+unsigned long long start_of_resume_ts_ns=0LL;
+unsigned long long end_of_resume_ts_ns=0LL;
+unsigned long long start_of_net_arrival_ts_ns=0LL;
+unsigned long long end_of_net_arrival_ts_ns=0LL;
 
 // measurements
 unsigned long long mode_change_latency_ns_avg=0LL;
@@ -156,6 +162,12 @@ unsigned long long transition_from_susp_ns_avg=0LL;
 unsigned long long transition_from_susp_ns_worst=0LL;
 unsigned long long enforcement_latency_ns_avg=0LL;
 unsigned long long enforcement_latency_ns_worst=0LL;
+unsigned long long defer_latency_ns_avg=0LL;
+unsigned long long defer_latency_ns_worst=0LL;
+unsigned long long resume_latency_ns_avg =0LL;
+unsigned long long resume_latency_ns_worst=0LL;
+unsigned long long net_arrival_latency_ns_avg = 0LL;
+unsigned long long net_arrival_latency_ns_worst = 0LL;
 
 struct zs_reserve reserve_table[MAX_RESERVES];
 struct zs_modal_reserve modal_reserve_table[MAX_MODAL_RESERVES];
@@ -293,18 +305,26 @@ void test_ticks(){
 
 int print_stats(){
   printk("Nanos per Ten ticks: %lu\n", nanosPerTenTicks);
-  printk("avg mode change latency: %llu (ns) \n",mode_change_latency_ns_avg );
-  printk("worst mode change latency: %llu (ns) \n",mode_change_latency_ns_worst);
-  printk("avg arrival no mode change %llu (ns) \n",arrival_no_mode_ns_avg);
-  printk("worst arrival no mode change %llu (ns) \n", arrival_no_mode_ns_worst);
-  printk("avg arrival mode change %llu (ns) \n",arrival_mode_ns_avg);
-  printk("worst arrival mode change %llu (ns) \n",arrival_mode_ns_worst);
-  printk("avg transition into suspension %llu (ns) \n",transition_into_susp_ns_avg);
-  printk("worst transition into suspension %llu (ns) \n",transition_into_susp_ns_worst);
-  printk("avg transition from suspension %llu (ns)\n",transition_from_susp_ns_avg);
-  printk("worst transition_from_susp_ns_worst %llu (ns) \n",transition_from_susp_ns_worst);
+
+  // comment out the mode change
+  /* printk("avg mode change latency: %llu (ns) \n",mode_change_latency_ns_avg ); */
+  /* printk("worst mode change latency: %llu (ns) \n",mode_change_latency_ns_worst); */
+  printk("avg arrival : %llu (ns) \n",arrival_no_mode_ns_avg);
+  printk("worst arrival: %llu (ns) \n", arrival_no_mode_ns_worst);
+  /* printk("avg arrival mode change %llu (ns) \n",arrival_mode_ns_avg); */
+  /* printk("worst arrival mode change %llu (ns) \n",arrival_mode_ns_worst); */
+  /* printk("avg transition into suspension %llu (ns) \n",transition_into_susp_ns_avg); */
+  /* printk("worst transition into suspension %llu (ns) \n",transition_into_susp_ns_worst); */
+  /* printk("avg transition from suspension %llu (ns)\n",transition_from_susp_ns_avg); */
+  /* printk("worst transition_from_susp_ns_worst %llu (ns) \n",transition_from_susp_ns_worst); */
   printk("avg enforcement latency: %llu (ns) \n",enforcement_latency_ns_avg);
   printk("worst enforcement latency: %llu (ns) \n",enforcement_latency_ns_worst);
+  printk("avg defer latency: %llu (ns) \n",defer_latency_ns_avg);
+  printk("worst defer latency: %llu (ns)\n",defer_latency_ns_worst);
+  printk("avg resume latency: %llu (ns)\n",resume_latency_ns_avg);
+  printk("worst resume latency: %llu (ns)\n",resume_latency_ns_worst);
+  printk("avg net arrival latency: %llu (ns)\n",net_arrival_latency_ns_avg);
+  printk("worst net arrival latency: %llu (ns)\n",net_arrival_latency_ns_worst);
   return 0;
 }
 
@@ -381,30 +401,49 @@ void resume_paused_reserves(int criticality, int cpuid){
 void kill_reserve(struct zs_reserve *rsv){
   struct task_struct *task;
   struct sched_param p;
-  char *type = (rsv->params.reserve_type & APERIODIC_ARRIVAL?"APERIODIC":"PERIODIC");
+  //char *type = (rsv->params.reserve_type & APERIODIC_ARRIVAL?"APERIODIC":"PERIODIC");
   task = gettask(rsv->pid);
   if (task != NULL){
     // restore priority
     p.sched_priority = rsv->effective_priority;
     sched_setscheduler(task, SCHED_FIFO, &p);    
-    printk("zsrmm.kill_reserve: setting rid(%d) %s TASK_UNINTERRUPTIBLE\n",rsv->rid,type);
+    //printk("zsrmm.kill_reserve: setting rid(%d) %s TASK_UNINTERRUPTIBLE\n",rsv->rid,type);
     set_task_state(task, TASK_UNINTERRUPTIBLE);
     set_tsk_need_resched(task);
     /* rsv->request_stop = 1; */
     /* push_to_reschedule(rsv->rid); */
-  } else {
-    printk("zsrmm.kill_reserve: task not found\n");
-  }
-
+    
+    if (start_of_defer_ts_ns != 0){
+      end_of_defer_ts_ns = timestamp_ns();
+      end_of_defer_ts_ns -= start_of_defer_ts_ns;
+      if (defer_latency_ns_avg == 0)
+	defer_latency_ns_avg = end_of_defer_ts_ns;
+      else{
+#ifdef __ARMCORE__
+	defer_latency_ns_avg = defer_latency_ns_avg + end_of_defer_ts_ns;
+	do_div(defer_latency_ns_avg,2);
+#else
+	defer_latency_ns_avg = (defer_latency_ns_avg + end_of_defer_ts_ns) / 2;
+#endif
+	if (end_of_defer_ts_ns > defer_latency_ns_worst){
+	  defer_latency_ns_worst = end_of_defer_ts_ns;
+	}
+	start_of_defer_ts_ns = 0L;
+      }
+      }
+      } else {
+	printk("zsrmm.kill_reserve: task not found\n");
+      }
+	
   // jumps directly to wait for next period
   rsv->execution_status = EXEC_WAIT_NEXT_PERIOD | EXEC_DEFERRED;
   rsv->critical_utility_mode_enforced=0;
   /* --- cancel all timers --- */
   if (rsv->params.enforcement_mask & ZS_RESPONSE_TIME_ENFORCEMENT_MASK){
-    hrtimer_cancel(&(rsv->response_time_timer));
-  }
+	hrtimer_cancel(&(rsv->response_time_timer));
+      }
   hrtimer_cancel(&(rsv->zs_timer));
-}
+      }
 
 void pause_reserve(struct zs_reserve *rsv){
   add_paused_reserve(rsv);
@@ -416,6 +455,7 @@ void pause_reserve(struct zs_reserve *rsv){
     push_to_reschedule(rsv->rid);
   } else {
     printk("zsrmm.pause_reserve: reserve != EXEC_RUNNING status(%X)\n",rsv->execution_status);
+    //start_of_enforcement_ts_ns = 0L;
   }
   rsv->execution_status |= EXEC_ENFORCED_PAUSED;
 }
@@ -689,21 +729,24 @@ static void scheduler_task(void *a){
 						UPDATE_HIGHEST_PRIORITY_TASK);
 
 				// measurement of enforcement
-				end_of_enforcement_ts_ns =  timestamp_ns();//ticks2nanos(rdtsc());
-				end_of_enforcement_ts_ns -= start_of_enforcement_ts_ns;
-				if (enforcement_latency_ns_avg == 0)
-				  enforcement_latency_ns_avg = end_of_enforcement_ts_ns;
-				else{
+				if (start_of_enforcement_ts_ns != 0){
+				  end_of_enforcement_ts_ns =  timestamp_ns();//ticks2nanos(rdtsc());
+				  end_of_enforcement_ts_ns -= start_of_enforcement_ts_ns;
+				  start_of_enforcement_ts_ns = 0L;
+				  if (enforcement_latency_ns_avg == 0)
+				    enforcement_latency_ns_avg = end_of_enforcement_ts_ns;
+				  else{
 #ifdef __ARMCORE__
-				  enforcement_latency_ns_avg = enforcement_latency_ns_avg + end_of_enforcement_ts_ns;
-				  do_div(enforcement_latency_ns_avg,2);
+				    enforcement_latency_ns_avg = enforcement_latency_ns_avg + end_of_enforcement_ts_ns;
+				    do_div(enforcement_latency_ns_avg,2);
 #else
-				  enforcement_latency_ns_avg = (enforcement_latency_ns_avg + end_of_enforcement_ts_ns) / 2;
-#endif
+				    enforcement_latency_ns_avg = (enforcement_latency_ns_avg + end_of_enforcement_ts_ns) / 2;
+#endif			      
+				  }
+				  
+				  if (end_of_enforcement_ts_ns > enforcement_latency_ns_worst)
+				    enforcement_latency_ns_worst = end_of_enforcement_ts_ns;
 				}
-
-				if (end_of_enforcement_ts_ns > enforcement_latency_ns_worst)
-				  enforcement_latency_ns_worst = end_of_enforcement_ts_ns;
 				// end of measurement code
 			} else {
 				if (reserve_table[rid].critical_utility_mode_enforced){
@@ -714,12 +757,32 @@ static void scheduler_task(void *a){
 				sched_setscheduler(task, SCHED_FIFO, &p);
 				reserve_table[rid].execution_status = EXEC_RUNNING;
 				start_accounting(&reserve_table[rid]);
+				if (start_of_resume_ts_ns != 0){
+				  end_of_resume_ts_ns =  timestamp_ns();
+				  end_of_resume_ts_ns -= start_of_resume_ts_ns;
+				  start_of_resume_ts_ns = 0L;
+				  if (resume_latency_ns_avg == 0){
+				    resume_latency_ns_avg = end_of_resume_ts_ns;
+				  }else{
+#ifdef __ARMCORE__
+				    resume_latency_ns_avg = resume_latency_ns_avg + end_of_resume_ts_ns;
+				    do_div(resume_latency_ns_avg,2);
+#else
+				    resume_latency_ns_avg = (resume_latency_ns_avg + end_of_resume_ts_ns) / 2;
+#endif			      
+				  }
+				  
+				  if (end_of_resume_ts_ns > resume_latency_ns_worst){
+				    resume_latency_ns_worst = end_of_resume_ts_ns;
+				  }
+				}
 			}
 		}
 		set_current_state(TASK_INTERRUPTIBLE);
 		schedule();
 	}
 }
+
 
 int pid2reserve(int pid){
   int i=0;
@@ -750,12 +813,14 @@ enum hrtimer_restart zs_instant_handler(struct hrtimer *timer){
 
 	spin_lock_irqsave(&zsrmlock,flags);
 	rid = timer2reserve(timer);
-	printk("zs_instant of reserveid:%d\n",rid);
+	//printk("zs_instant of reserveid:%d\n",rid);
 	if (rid == -1){
 		printk("zs_timer without reserve\n");
 		spin_unlock_irqrestore(&zsrmlock,flags);
 		return HRTIMER_NORESTART;
 	}
+
+	start_of_enforcement_ts_ns =  timestamp_ns();//ticks2nanos(rdtsc());
 
 	// special debugging mask
 	if (!(reserve_table[rid].params.enforcement_mask & 
@@ -923,7 +988,7 @@ enum hrtimer_restart period_handler(struct hrtimer *timer){
 	  //wake_up_process(task);
 	  //printk(KERN_INFO "Wakeup(task) rid(%d) 1\n",rid);
 
-	  printk(KERN_INFO "period timer rid(%d) : %ld secs: %ld ns \n",rid,p->tv_sec, p->tv_nsec);
+	  //printk(KERN_INFO "period timer rid(%d) : %ld secs: %ld ns \n",rid,p->tv_sec, p->tv_nsec);
 	  kperiod = ktime_set(p->tv_sec,p->tv_nsec);
 	  hrtimer_init(&(reserve_table[rid].period_timer),CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	  reserve_table[rid].period_timer.function = period_handler;
@@ -969,7 +1034,7 @@ enum hrtimer_restart period_handler(struct hrtimer *timer){
 	    // moved the wakeup call here to ensure only waking up when not enforced
 	    reserve_table[rid].execution_status = EXEC_RUNNING;
 	    wake_up_process(task);
-	    printk(KERN_INFO "Wakeup(task) rid(%d) 1\n",rid);
+	    //printk(KERN_INFO "Wakeup(task) rid(%d) 1\n",rid);
 	    push_to_reschedule(rid);
 	    wake_up_process(sched_task);
 	    set_tsk_need_resched(task);
@@ -980,7 +1045,7 @@ enum hrtimer_restart period_handler(struct hrtimer *timer){
 
 	// no modal_scheduling => !mode_change
 	if (!mode_change){
-	  no_mode_change_ts_ns = ticks2nanos(rdtsc());
+	  no_mode_change_ts_ns = timestamp_ns();//ticks2nanos(rdtsc());
 	  no_mode_change_ts_ns -= arrival_ts_ns;
 #ifdef __ARMCORE__
 	  arrival_no_mode_ns_avg = arrival_no_mode_ns_avg + no_mode_change_ts_ns;
@@ -1323,20 +1388,20 @@ void finish_period_degradation(int rid, int is_pipeline_stage){
   system_utility = max_marginal_utility;
   
   // check if the reserve overloaded
-  if ( (is_pipeline_stage & 
-	(reserve_table[rid].e2e_job_executing_nanos >
-	 reserve_table[rid].e2e_nominal_exectime_nanos)) ||
+  if ( (is_pipeline_stage &
+  	(reserve_table[rid].e2e_job_executing_nanos >
+  	 reserve_table[rid].e2e_nominal_exectime_nanos)) ||
        (!is_pipeline_stage &
-	(reserve_table[rid].job_executing_nanos > 
-	 reserve_table[rid].nominal_exectime_nanos)) 
+  	(reserve_table[rid].job_executing_nanos >
+  	 reserve_table[rid].nominal_exectime_nanos))
        ){
     //if (reserve_table[rid].job_executing_nanos > reserve_table[rid].nominal_exectime_nanos){
     // overloaded. Kill paused jobs
-    printk("rid(%d) overloaded killing paused reserves\n",rid);
+    //printk("rid(%d) overloaded killing paused reserves\n",rid);
     kill_paused_reserves(reserve_table[rid].params.overloaded_marginal_utility,reserve_table[rid].params.bound_to_cpu);
   } else {
     // did not overload. Resume jobs with new system_utility
-    printk("rid(%d) DID NOT overload resuming paused reserves at criticality(%ld)\n",rid,system_utility);
+    //printk("rid(%d) DID NOT overload resuming paused reserves at criticality(%ld)\n",rid,system_utility);
     resume_paused_reserves(system_utility,reserve_table[rid].params.bound_to_cpu);
   }
 
@@ -1451,17 +1516,17 @@ void period_degradation(int rid){
   long long elapsedns;
   
   
-  printk(KERN_INFO "period degradation:start\n");
+  //printk(KERN_INFO "period degradation:start\n");
 
   //elapsedns =  ticks2nanos(rdtsc()) - reserve_table[rid].local_e2e_start_of_period_nanos;
   elapsedns =  timestamp_ns() - reserve_table[rid].local_e2e_start_of_period_nanos;
-  printk("period degradation debug: reserve(%d) criticality(%ld) sys_util(%ld) elapse(%lld)\n",rid, GET_EFFECTIVE_UTILITY(rid),system_utility, elapsedns);
+  //printk("period degradation debug: reserve(%d) criticality(%ld) sys_util(%ld) elapse(%lld)\n",rid, GET_EFFECTIVE_UTILITY(rid),system_utility, elapsedns);
 
   current_marginal_utility = GET_EFFECTIVE_UTILITY(rid);
   
   reserve_table[rid].in_critical_mode = 1;
   
-  printk(KERN_INFO "period degradation rid(%d) curr utility: %ld, system_utility: %ld\n",rid,current_marginal_utility, system_utility);
+  //printk(KERN_INFO "period degradation rid(%d) curr utility: %ld, system_utility: %ld\n",rid,current_marginal_utility, system_utility);
   if (system_utility < current_marginal_utility){
     system_utility = current_marginal_utility;
     if (reserve_table[rid].params.critical_util_degraded_mode != -1){
@@ -1490,6 +1555,10 @@ void period_degradation(int rid){
     // skip empty reserves
     if (reserve_table[i].params.priority == -1)
       continue;
+
+    // skip myself
+    if (rid == i)
+      continue;
     
     // only the ones on the same processor
     if (reserve_table[rid].params.bound_to_cpu != reserve_table[i].params.bound_to_cpu)
@@ -1497,7 +1566,7 @@ void period_degradation(int rid){
     
     tmp_marginal_utility = GET_EFFECTIVE_UTILITY(i);
     
-    printk(KERN_INFO "period degradation checking rid(%d) util:%ld sysutil:%ld\n",i,tmp_marginal_utility, system_utility);
+    //printk(KERN_INFO "period degradation checking rid(%d) util:%ld sysutil:%ld\n",i,tmp_marginal_utility, system_utility);
     if (tmp_marginal_utility < system_utility){
       int selected_mode=0;
       while(selected_mode < (reserve_table[i].params.num_degraded_modes) &&
@@ -1514,7 +1583,7 @@ void period_degradation(int rid){
 	reserve_table[i].critical_utility_mode_enforced = 1;
 	reserve_table[i].just_returned_from_degradation=0;
 	
-	printk(KERN_INFO "period degrad: stopping task with rid(%d)\n",i);
+	//printk(KERN_INFO "period degrad: stopping task with rid(%d)\n",i);
 
 	pause_reserve(&reserve_table[i]);
 
@@ -1634,8 +1703,8 @@ int wait_for_next_leaf_stage_arrival(int rid, unsigned long *flags,
   spin_unlock_irqrestore(&zsrmlock, *flags);
   up(&zsrmsem);
 
-  printk("zsrmm: wait next leaf. rid(%d) exectime (%llu) before kernel_recvmsg\n",rid,
-	 reserve_table[rid].job_executing_nanos);
+  /* printk("zsrmm: wait next leaf. rid(%d) exectime (%llu) before kernel_recvmsg\n",rid, */
+  /* 	 reserve_table[rid].job_executing_nanos); */
 
   len = sys_recvfromp(fd,ubuf-sizeof(struct pipeline_header), 
 		      size+sizeof(struct pipeline_header), 
@@ -1643,7 +1712,7 @@ int wait_for_next_leaf_stage_arrival(int rid, unsigned long *flags,
 
   receiving_timestamp_nanos = timestamp_ns(); //ticks2nanos(rdtsc());
 
-  printk("zsrmm: wait next leaf. after kernel rcvmsg\n");
+  //printk("zsrmm: wait next leaf. after kernel rcvmsg\n");
 
   if (len <0){
     printk("zsrmm: wait next leaf: sock_recvmsg failed. err:%d\n",len);
@@ -1667,9 +1736,9 @@ int wait_for_next_leaf_stage_arrival(int rid, unsigned long *flags,
 											 pipeline_hdr.rem_start_of_period_nanos,
 											 remaddr);
 
-  printk("zsrmm: wait_next_leaf_arrival: e2e_job_executing_nanos(%llu)\n",reserve_table[rid].e2e_job_executing_nanos);
-  printk("zsrmm: wait_next_leaf_arrival: local_e2e_start_of_period_nanos(%llu)\n",reserve_table[rid].local_e2e_start_of_period_nanos);
-  printk("zsrmm: wait_next_leaf_arrival: remote address(0x%X)\n",remaddr.sin_addr.s_addr);
+  /* printk("zsrmm: wait_next_leaf_arrival: e2e_job_executing_nanos(%llu)\n",reserve_table[rid].e2e_job_executing_nanos); */
+  /* printk("zsrmm: wait_next_leaf_arrival: local_e2e_start_of_period_nanos(%llu)\n",reserve_table[rid].local_e2e_start_of_period_nanos); */
+  /* printk("zsrmm: wait_next_leaf_arrival: remote address(0x%X)\n",remaddr.sin_addr.s_addr); */
 
   // TODO: reprogram the e2e_zs_timer discounting the currently elapsed e2e response time
   
@@ -1728,7 +1797,7 @@ int wait_for_next_stage_arrival(int rid, unsigned long *flags,
     spin_unlock_irqrestore(&zsrmlock, *flags);
     up(&zsrmsem);
 
-    printk("zsrmm: wait_next_stage_arrival sending... \n");
+    //printk("zsrmm: wait_next_stage_arrival sending... \n");
     len = 0;
 
     if (!(io_mask & MIDDLE_STAGE_DONT_SEND_OUTPUT)){
@@ -1745,7 +1814,7 @@ int wait_for_next_stage_arrival(int rid, unsigned long *flags,
       spin_lock_irqsave(&zsrmlock, *flags);
     } else {
 
-      printk("zsrmm: wait_next_stage_arrival: going into recvfrom\n");
+      //printk("zsrmm: wait_next_stage_arrival: going into recvfrom\n");
 
       len=0;
      
@@ -1757,7 +1826,7 @@ int wait_for_next_stage_arrival(int rid, unsigned long *flags,
       
       receiving_timestamp_nanos = timestamp_ns();//ticks2nanos(rdtsc());
 
-      printk("zsrmm: wait_next_stage_arrival: returned from recvfrom\n");
+      //printk("zsrmm: wait_next_stage_arrival: returned from recvfrom\n");
       
       // reacquire zsrm locks
       down(&zsrmsem);
@@ -1777,9 +1846,9 @@ int wait_for_next_stage_arrival(int rid, unsigned long *flags,
 											     pipeline_hdr.rem_sending_timestamp_nanos,
 											     pipeline_hdr.rem_start_of_period_nanos,
 											     remaddr);
-      printk("zsrmm: wait_next_stage_arrival: e2e_job_executing_nanos(%llu)\n",reserve_table[rid].e2e_job_executing_nanos);
-      printk("zsrmm: wait_next_stage_arrival: local_e2e_start_of_period_nanos(%llu)\n",reserve_table[rid].local_e2e_start_of_period_nanos);
-      printk("zsrmm: wait_next_stage_arrival: remote address(0x%X)\n",remaddr.sin_addr.s_addr);
+      /* printk("zsrmm: wait_next_stage_arrival: e2e_job_executing_nanos(%llu)\n",reserve_table[rid].e2e_job_executing_nanos); */
+      /* printk("zsrmm: wait_next_stage_arrival: local_e2e_start_of_period_nanos(%llu)\n",reserve_table[rid].local_e2e_start_of_period_nanos); */
+      /* printk("zsrmm: wait_next_stage_arrival: remote address(0x%X)\n",remaddr.sin_addr.s_addr); */
       
       // TODO: reprogram the e2e_zs_timer discounting the currently elapsed e2e response time
       
@@ -1803,7 +1872,7 @@ int wait_for_next_root_period(int rid, int fd, void __user *buf, size_t buflen, 
 
   end_of_job_processing(rid, 1);
   
-  printk("zsrmm: wait_next_root_period: \n");
+  //printk("zsrmm: wait_next_root_period: \n");
 
   if (copy_from_user(&pipeline_hdrs, (buf-sizeof(struct pipeline_header_with_signature)), 
 		     sizeof(struct pipeline_header_with_signature))){
@@ -1819,8 +1888,8 @@ int wait_for_next_root_period(int rid, int fd, void __user *buf, size_t buflen, 
 
     copy_to_user(buf - sizeof(struct pipeline_header_with_signature), 
 		 &pipeline_hdrs, sizeof(struct pipeline_header_with_signature));
-    printk("zsrmm: wait_next_root_period: e2e_job_executing_nanos(%llu)\n",reserve_table[rid].e2e_job_executing_nanos);
-    printk("zsrmm: wait_next_root_period: e2e_local_start_period(%llu)\n",reserve_table[rid].local_e2e_start_of_period_nanos);
+    /* printk("zsrmm: wait_next_root_period: e2e_job_executing_nanos(%llu)\n",reserve_table[rid].e2e_job_executing_nanos); */
+    /* printk("zsrmm: wait_next_root_period: e2e_local_start_period(%llu)\n",reserve_table[rid].local_e2e_start_of_period_nanos); */
     
     len = sys_sendtop(fd, buf-sizeof(struct pipeline_header), 
 		      buflen+sizeof(struct pipeline_header), 
@@ -1839,6 +1908,9 @@ int wait_for_next_root_period(int rid, int fd, void __user *buf, size_t buflen, 
 }
 
 void end_of_job_processing(int rid, int is_pipeline_stage){
+
+  start_of_resume_ts_ns = start_of_defer_ts_ns = timestamp_ns();
+
   hrtimer_cancel(&(reserve_table[rid].zs_timer));
   if (reserve_table[rid].params.enforcement_mask & ZS_RESPONSE_TIME_ENFORCEMENT_MASK){
     hrtimer_cancel(&(reserve_table[rid].response_time_timer));
@@ -1852,6 +1924,9 @@ void end_of_job_processing(int rid, int is_pipeline_stage){
   
   if (reserve_table[rid].in_critical_mode){
     finish_period_degradation(rid, is_pipeline_stage);
+  } else {
+    // reset the defer timer
+    start_of_resume_ts_ns = start_of_defer_ts_ns = 0L;
   }
   if (reserve_table[rid].just_returned_from_degradation){
     reserve_table[rid].just_returned_from_degradation = 0;
@@ -1859,9 +1934,9 @@ void end_of_job_processing(int rid, int is_pipeline_stage){
     //try_resume_normal_period(rid);
   }
 
-  printk("END OF JOB rsv name(%s) exectime(%llu)\n",
-	 reserve_table[rid].params.name,
-	 reserve_table[rid].job_executing_nanos);
+  /* printk("END OF JOB rsv name(%s) exectime(%llu)\n", */
+  /* 	 reserve_table[rid].params.name, */
+  /* 	 reserve_table[rid].job_executing_nanos); */
 
   // reset the job_executing_nanos
   reserve_table[rid].job_executing_nanos=0L;
@@ -1880,7 +1955,7 @@ int start_of_job_processing(int rid, long long zero_slack_adjustment_ns){
   adjusted_zs_instant.tv_nsec = reserve_table[rid].params.zs_instant.tv_nsec;
   if (zero_slack_adjustment_ns != 0){
     zs_instant_ns = TIMESPEC2NS(&adjusted_zs_instant);
-    printk("start of job reserve(%d) original zs(%llu) adjustment(%lld)\n",rid, zs_instant_ns, zero_slack_adjustment_ns);
+    //printk("start of job reserve(%d) original zs(%llu) adjustment(%lld)\n",rid, zs_instant_ns, zero_slack_adjustment_ns);
     zs_instant_ns = zs_instant_ns + zero_slack_adjustment_ns;
     if (zs_instant_ns <0){
       // too late to setup timer!! zs already elapsed
@@ -1890,7 +1965,7 @@ int start_of_job_processing(int rid, long long zero_slack_adjustment_ns){
     nanos2timespec(zs_instant_ns, &adjusted_zs_instant);
   }
 
-  printk("reserve(%d) start of job zs instant at (%llu)\n", rid, TIMESPEC2NS(&adjusted_zs_instant));
+  //printk("reserve(%d) start of job zs instant at (%llu)\n", rid, TIMESPEC2NS(&adjusted_zs_instant));
 
   kzs = ktime_set(adjusted_zs_instant.tv_sec, 
 		  adjusted_zs_instant.tv_nsec);
@@ -2123,6 +2198,8 @@ int notify_arrival(int __user *fds, int nfds){
   int i,j;
   long long zero_slack_adjustment;
 
+  start_of_net_arrival_ts_ns = timestamp_ns();
+
   if (copy_from_user(&kfds, fds, sizeof(int) * nfds)){
     return -EFAULT;
   }
@@ -2138,7 +2215,7 @@ int notify_arrival(int __user *fds, int nfds){
 	  if (task != NULL){
 	    if ((task->state & TASK_INTERRUPTIBLE) || 
 		(task->state & TASK_UNINTERRUPTIBLE)){
-	      printk("zsrmm.notify_arrival: waking up rsv(%d)\n",j);
+	      //printk("zsrmm.notify_arrival: waking up rsv(%d)\n",j);
 	      wake_up_process(task);
 	      set_tsk_need_resched(task);
 	    }
@@ -2148,9 +2225,28 @@ int notify_arrival(int __user *fds, int nfds){
 	  if (start_of_job_processing(j,zero_slack_adjustment)){
 	    printk("zsrmm: notify_arrival: start job returned error adjustment(%lld)!!\n",zero_slack_adjustment);
 	  }
-	  printk("zsrmm: notify_arrival reserve(%d) resumed\n",j);
+	  if (start_of_net_arrival_ts_ns != 0){
+	    end_of_net_arrival_ts_ns = timestamp_ns();
+	    end_of_net_arrival_ts_ns -= start_of_net_arrival_ts_ns;
+	    if (net_arrival_latency_ns_avg == 0)
+	      net_arrival_latency_ns_avg = end_of_net_arrival_ts_ns;
+	    else{
+#ifdef __ARMCORE__
+	      net_arrival_latency_ns_avg = net_arrival_latency_ns_avg + end_of_net_arrival_ts_ns;
+	      do_div(net_arrival_latency_ns_avg,2);
+#else
+	      net_arrival_latency_ns_avg = (net_arrival_latency_ns_avg + end_of_net_arrival_ts_ns) / 2;
+#endif		    
+	    }
+	    if (end_of_net_arrival_ts_ns > net_arrival_latency_ns_worst){
+	      net_arrival_latency_ns_worst = end_of_net_arrival_ts_ns;
+	    }
+	    
+	    start_of_net_arrival_ts_ns=0L;
+	  }
+	  //printk("zsrmm: notify_arrival reserve(%d) resumed\n",j);
 	} else {
-	  printk("zsrmm.notify_arrival: rid(%d) NOT DEFERRED\n",j);
+	  //printk("zsrmm.notify_arrival: rid(%d) NOT DEFERRED\n",j);
 	}
 	break;
       }
@@ -2712,6 +2808,8 @@ static int __init zsrm_init(void)
   p.sched_priority = scheduler_priority;
   sched_setscheduler(sched_task, SCHED_FIFO, &p);
   kthread_bind(sched_task, 0);
+  // try to pint sched task in cpu where the enforcement happens
+  //kthread_bind(sched_task, 3);
 
   printk(KERN_WARNING "MZSRMM: nanos per ten ticks: %lu \n",nanosPerTenTicks);
   printk(KERN_WARNING "MZSRMM: ready!\n");

@@ -78,6 +78,7 @@ int sync_start_semid;
 
 int fds[16];
 
+#define ITERATIONS 10
 #include "stall-warning-subsystem.h"
 #include "runway-overrun-subsystem.h"
 #include "traffic-awareness-subsystem.h"

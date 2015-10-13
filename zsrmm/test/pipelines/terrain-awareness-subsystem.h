@@ -105,7 +105,7 @@ void *ground_radar_task(void *argp){
   zs_attach_reserve(sched,rid,gettid());
 
 
-  for (i=0;i<10;i++){
+  for (i=0;i<ITERATIONS;i++){
     busy_timestamped(484,timestamps_nsd, MAX_TIMESTAMPS,&bufidxd);
     sprintf(buf,"msg[%d]",i);
     if ((err = zs_wait_next_root_period(sched,rid,fd, 

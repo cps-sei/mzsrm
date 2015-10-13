@@ -1,3 +1,4 @@
+
 /***********************
  * STALL WARNING SYSTEM*
  ***********************/
@@ -57,7 +58,7 @@ void *airspeed_task(void *argp){
   cpuattr.overload_execution_time.tv_sec = 0;
   cpuattr.overload_execution_time.tv_nsec = 100000000;
   cpuattr.zs_instant.tv_sec=8;//11 ;
-  cpuattr.zs_instant.tv_nsec=0;//278000000;
+  cpuattr.zs_instant.tv_nsec=0;//278000000; 
   cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
   cpuattr.reserve_type = CRITICALITY_RESERVE | PIPELINE_STAGE_ROOT;
@@ -108,7 +109,8 @@ void *airspeed_task(void *argp){
 
   int firsttime =1;
 
-  for (i=0;i<10;i++){
+  //for (i=0;i<ITERATIONS;i++){
+  for (i=0;i<2;i++){
     if (firsttime){
       firsttime=0;
       busy_timestamped(1362,timestamps_ns1, MAX_TIMESTAMPS,&bufidx1);
@@ -206,8 +208,8 @@ void *lift_task(void *argp){
   cpuattr.execution_time.tv_nsec = 100000000;
   cpuattr.overload_execution_time.tv_sec = 0;
   cpuattr.overload_execution_time.tv_nsec = 100000000;
-  cpuattr.zs_instant.tv_sec=8;//11;
-  cpuattr.zs_instant.tv_nsec=0;//278000000;
+  cpuattr.zs_instant.tv_sec=8;//11; 
+  cpuattr.zs_instant.tv_nsec=0; //278000000; 
   cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
   cpuattr.reserve_type = CRITICALITY_RESERVE | PIPELINE_STAGE_MIDDLE | APERIODIC_ARRIVAL;
@@ -363,8 +365,8 @@ void *stall_task(void *argp){
   cpuattr.execution_time.tv_nsec = 100000000;
   cpuattr.overload_execution_time.tv_sec = 0;
   cpuattr.overload_execution_time.tv_nsec = 100000000;
-  cpuattr.zs_instant.tv_sec=8;//11;
-  cpuattr.zs_instant.tv_nsec=0;//278000000;
+  cpuattr.zs_instant.tv_sec=8;//11; 
+  cpuattr.zs_instant.tv_nsec=0; //278000000;
   cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
   cpuattr.reserve_type = CRITICALITY_RESERVE | PIPELINE_STAGE_MIDDLE | APERIODIC_ARRIVAL;
@@ -526,8 +528,8 @@ void *angle_task(void *argp){
   cpuattr.execution_time.tv_nsec = 100000000;
   cpuattr.overload_execution_time.tv_sec = 0;
   cpuattr.overload_execution_time.tv_nsec = 500000000;
-  cpuattr.zs_instant.tv_sec=8;//11;
-  cpuattr.zs_instant.tv_nsec=0;//278000000;
+  cpuattr.zs_instant.tv_sec=8;//11; 
+  cpuattr.zs_instant.tv_nsec=0; //278000000; 
   cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
   cpuattr.reserve_type = CRITICALITY_RESERVE | PIPELINE_STAGE_LEAF | APERIODIC_ARRIVAL;

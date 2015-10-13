@@ -106,7 +106,7 @@ void *air_radar_task(void *argp){
   zs_attach_reserve(sched,rid,gettid());
 
 
-  for (i=0;i<10;i++){
+  for (i=0;i<ITERATIONS;i++){
     busy_timestamped(656,timestamps_ns9, MAX_TIMESTAMPS,&bufidx9);
     sprintf(buf,"msg[%d]",i);
     if ((err = zs_wait_next_root_period(sched,rid,fd, 

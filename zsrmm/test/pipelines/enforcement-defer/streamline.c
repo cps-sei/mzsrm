@@ -223,22 +223,22 @@ int main(int argc, char *argv[]){
     // output the start
     switch(running){
     case 1:
-      if (outtimestamps_ns1[outbufidx1] != timestamps_ns1[nextstart]){
+      if (outbufidx1 == 0 || outtimestamps_ns1[outbufidx1-1] != timestamps_ns1[nextstart]){
 	ts = outtimestamps_ns1[outbufidx1++] = timestamps_ns1[nextstart];
       }
       break;
     case 2:
-      if (outtimestamps_ns2[outbufidx2] != timestamps_ns2[nextstart]){
+      if (outbufidx2 == 0 || outtimestamps_ns2[outbufidx2-1] != timestamps_ns2[nextstart]){
 	ts = outtimestamps_ns2[outbufidx2++] = timestamps_ns2[nextstart];
       }
       break;
     case 3:
-      if (outtimestamps_ns3[outbufidx3] = timestamps_ns3[nextstart]){
+      if (outbufidx3 == 0 || outtimestamps_ns3[outbufidx3-1] != timestamps_ns3[nextstart]){
 	ts = outtimestamps_ns3[outbufidx3++] = timestamps_ns3[nextstart];
       }
       break;
     case 4:
-      if (outtimestamps_ns4[outbufidx4] = timestamps_ns4[nextstart]){
+      if (outbufidx4 == 0 || outtimestamps_ns4[outbufidx4-1] != timestamps_ns4[nextstart]){
 	ts = outtimestamps_ns4[outbufidx4++] = timestamps_ns4[nextstart];
       }
       break;

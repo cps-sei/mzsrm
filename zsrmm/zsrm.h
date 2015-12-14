@@ -137,10 +137,16 @@ DM-0000891
 #define EXIT_REQUEST_SIGNAL (SIGRTMIN+4)
 
 
-#define ZS_RESPONSE_TIME_ENFORCEMENT_MASK 0x1
-#define ZS_PERIOD_DEGRADATION_MAKS 0x2
-#define ZS_CRITICALITY_ENFORCEMENT_MASK 0x4
-#define DONT_ENFORCE_ZERO_SLACK 0X8
+#define ZS_RESPONSE_TIME_ENFORCEMENT_MASK 0b000001
+#define ZS_PERIOD_DEGRADATION_MAKS        0b000010
+#define ZS_CRITICALITY_ENFORCEMENT_MASK   0b000100
+#define DONT_ENFORCE_ZERO_SLACK_MASK      0b001000
+#define ZS_ENFORCEMENT_HARD_MASK          0b010000 // if not set then SOFT
+#define ZS_ENFORCE_OVERLOAD_BUDGET_MASK   0b100000
+
+
+#define REQUEST_STOP_PAUSE 1
+#define REQUEST_STOP_DEFER 2
 
 #define MAX_DEGRADED_MODES 4
 #define MAX_TRANSITIONS 64
@@ -179,6 +185,16 @@ DM-0000891
  */
 
 #define RESERVE_NAME_LEN 50
+
+#define VALID_RID(rid) ((rid>=0 && rid <MAX_RESERVES) && (reserve_table[rid].params.priority != -1))
+
+#define VALID_SYS_TRANSITION_ID(trid) ((trid >=0 && trid<MAX_SYS_MODE_TRANSITIONS) && sys_mode_transition_table[trid][0].in_use != 0)
+
+#define VALID_MRID(mrid)((mrid >=0 && mrid <MAX_MODAL_RESERVES) && (modal_reserve_table[mrid].in_use != 0))
+
+#define VALID_MID(mid) ((mid >=0 && mid <MAX_RESERVES))
+
+#define VALID_TRID(trid) (trid >=0 && trid <MAX_TRANSITIONS)
 
 #define TIMESPEC2NS(ts) (((unsigned long long) (ts)->tv_sec) * 1000000000ll + (unsigned long long) (ts)->tv_nsec)
 
@@ -337,7 +353,7 @@ static void zsrm_cleanup_module(void);
 #define UPDATE_HIGHEST_PRIORITY_TASK 1
 #define DONT_UPDATE_HIGHEST_PRIORITY_TASK 0
 
-void stop_accounting(struct zs_reserve *rsv, int update_highest_priority);
+void stop_accounting(struct zs_reserve *rsv, int update_highest_priority, int in_enforcer_handler, int swap_task);
 void start_accounting(struct zs_reserve *rsv);
 
 void test_accounting(void);
@@ -346,7 +362,7 @@ void add_paused_reserve(struct zs_reserve *rsv);
 void del_paused_reserve(struct zs_reserve *rsv);
 void kill_paused_reserves(int criticality,int cpuid);
 void resume_paused_reserves(int criticality,int cpuid);
-void kill_reserve(struct zs_reserve *rsv);
+void kill_reserve(struct zs_reserve *rsv, int in_interrupt_context);
 void pause_reserve(struct zs_reserve *rsv);
 void resume_reserve(struct zs_reserve *rsv);
 int push_to_reschedule(int i);
@@ -368,6 +384,10 @@ int start_of_job_processing(int rid, long long zero_slack_adjustment_ns);
 long long calculate_zero_slack_adjustment_ns(unsigned long long start_period_ns);
 int start_arrival_task(struct pollfd __user *fds, unsigned int nfds);
 int notify_arrival(int __user *fds, int nfds);
+
+void exectime_enforcer_timer_stop(struct zs_reserve *rsv);
+void exectime_enforcer_timer_start(struct zs_reserve *rsv);
+
 #endif
 
 struct attach_api{

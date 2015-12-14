@@ -71,11 +71,8 @@ DM-0000891
 #include "zsrm.h"
 
 
-int (*do_sys_pollp)(struct pollfd __user *ufds, unsigned int nfds,
-				struct timespec *end_time);
-
+int (*do_sys_pollp)(struct pollfd __user *ufds, unsigned int nfds, struct timespec *end_time);
 int (*sys_recvfromp)(int fd, void __user *ubuf, size_t size, unsigned int flags, struct sockaddr __user *addr, int __user *addr_len);
-
 int (*sys_sendtop)(int fd, void __user *ubuf, size_t len, unsigned int flags, struct sockaddr __user *addr, int addr_len);
 
 MODULE_AUTHOR("Dionisio de Niz");
@@ -131,6 +128,10 @@ int modal_scheduling  = 0; // NO by default
 
 struct zs_reserve *active_reserve_ptr[MAX_CPUS];
 struct zs_reserve *head_paused_reserve_ptr[MAX_CPUS];
+
+struct hrtimer exectime_enforcer_timers[MAX_CPUS];
+
+struct task_struct *sched_task;
 
 //timestamps
 unsigned long long arrival_ts_ns=0LL;
@@ -373,7 +374,7 @@ void kill_paused_reserves(int criticality, int cpuid){
   }
 
   while (tmp != NULL){
-    kill_reserve(tmp);
+    kill_reserve(tmp,0);
     prev = tmp;
     if (tmp == head_paused_reserve_ptr[cpuid])
       head_paused_reserve_ptr[cpuid] = tmp->next_paused_lower_criticality;
@@ -398,21 +399,32 @@ void resume_paused_reserves(int criticality, int cpuid){
 
 // kill always happens on a paused reserve once the overloading
 // job finishes, so the next job arrival revives the reserve
-void kill_reserve(struct zs_reserve *rsv){
+void kill_reserve(struct zs_reserve *rsv, int in_interrupt_context){
   struct task_struct *task;
   struct sched_param p;
   //char *type = (rsv->params.reserve_type & APERIODIC_ARRIVAL?"APERIODIC":"PERIODIC");
   task = gettask(rsv->pid);
   if (task != NULL){
     // restore priority
-    p.sched_priority = rsv->effective_priority;
-    sched_setscheduler(task, SCHED_FIFO, &p);    
-    //printk("zsrmm.kill_reserve: setting rid(%d) %s TASK_UNINTERRUPTIBLE\n",rsv->rid,type);
-    set_task_state(task, TASK_UNINTERRUPTIBLE);
+    if (!in_interrupt_context){
+      if (rsv->params.enforcement_mask & ZS_ENFORCEMENT_HARD_MASK){
+	//printk("zsrmm.kill_reserve: setting rid(%d) TASK_INTERRUPTIBLE\n",rsv->rid);
+	p.sched_priority = rsv->effective_priority;
+	sched_setscheduler(task, SCHED_FIFO, &p);    
+	set_task_state(task, TASK_INTERRUPTIBLE);
+      } else { // ZS_ENFORCEMENT_SOFT_MASK -- DEFAULT
+	rsv->effective_priority = 0;
+	p.sched_priority = 0;
+	sched_setscheduler(task, SCHED_NORMAL, &p);    
+      }
+      set_tsk_need_resched(task);
+      stop_accounting(rsv,1,0,0);
+    } else {
+      rsv->request_stop = REQUEST_STOP_DEFER; 
+      push_to_reschedule(rsv->rid);
+      wake_up_process(sched_task);
+    }
     set_tsk_need_resched(task);
-    /* rsv->request_stop = 1; */
-    /* push_to_reschedule(rsv->rid); */
-    
     if (start_of_defer_ts_ns != 0){
       end_of_defer_ts_ns = timestamp_ns();
       end_of_defer_ts_ns -= start_of_defer_ts_ns;
@@ -430,33 +442,32 @@ void kill_reserve(struct zs_reserve *rsv){
 	}
 	start_of_defer_ts_ns = 0L;
       }
-      }
-      } else {
-	printk("zsrmm.kill_reserve: task not found\n");
-      }
-	
-  // jumps directly to wait for next period
-  rsv->execution_status = EXEC_WAIT_NEXT_PERIOD | EXEC_DEFERRED;
-  rsv->critical_utility_mode_enforced=0;
-  /* --- cancel all timers --- */
-  if (rsv->params.enforcement_mask & ZS_RESPONSE_TIME_ENFORCEMENT_MASK){
-	hrtimer_cancel(&(rsv->response_time_timer));
-      }
-  hrtimer_cancel(&(rsv->zs_timer));
-      }
+    }
+    // jumps directly to wait for next period
+    rsv->execution_status = EXEC_WAIT_NEXT_PERIOD | EXEC_DEFERRED;
+    rsv->critical_utility_mode_enforced=0;
+    /* --- cancel all timers --- */
+    if (rsv->params.enforcement_mask & ZS_RESPONSE_TIME_ENFORCEMENT_MASK){
+      hrtimer_cancel(&(rsv->response_time_timer));
+    }
+    hrtimer_cancel(&(rsv->zs_timer));
+  } else {
+    printk("zsrmm.kill_reserve: task not found\n");
+  }
+}
 
 void pause_reserve(struct zs_reserve *rsv){
   add_paused_reserve(rsv);
-  if (rsv->execution_status == EXEC_RUNNING){
+  //if (rsv->execution_status == EXEC_RUNNING){
     // stop the task
     rsv->critical_utility_mode_enforced = 1;
     rsv->just_returned_from_degradation=0;
-    rsv->request_stop = 1;
+    rsv->request_stop = REQUEST_STOP_PAUSE;
     push_to_reschedule(rsv->rid);
-  } else {
-    printk("zsrmm.pause_reserve: reserve != EXEC_RUNNING status(%X)\n",rsv->execution_status);
-    //start_of_enforcement_ts_ns = 0L;
-  }
+    //} else {
+    //printk("zsrmm.pause_reserve: reserve(%d) != EXEC_RUNNING status(%X)\n",rsv->rid,rsv->execution_status);
+    ////start_of_enforcement_ts_ns = 0L;
+    //}
   rsv->execution_status |= EXEC_ENFORCED_PAUSED;
 }
 
@@ -472,7 +483,7 @@ void resume_reserve(struct zs_reserve *rsv){
 	wake_up_process(task);
       }
       // reschedule again
-      // rsv->effective_priority = rsv->params.priority;
+      rsv->effective_priority = rsv->params.priority;
       push_to_reschedule(rsv->rid);
       rsv->current_degraded_mode = -1;
       rsv->just_returned_from_degradation=1;
@@ -488,46 +499,80 @@ void resume_reserve(struct zs_reserve *rsv){
 
 void start_accounting(struct zs_reserve *rsv){
   if (active_reserve_ptr[rsv->params.bound_to_cpu] == rsv){
-    //printk("zsrm.start_acct: ptr(%d) == rsv(%d)\n",active_reserve_ptr->rid,rsv->rid);
+    printk("zsrm.start_acct: active_rsv_id(%d) == rsv(%d) in cpu(%d)\n",active_reserve_ptr[rsv->params.bound_to_cpu]->rid,rsv->rid,rsv->params.bound_to_cpu);
     // only start accounting
     rsv->job_resumed_timestamp_nanos = timestamp_ns(); //ticks2nanos(rdtsc());
+    if (rsv->params.enforcement_mask & ZS_ENFORCE_OVERLOAD_BUDGET_MASK){
+      exectime_enforcer_timer_start(rsv);
+    }
   } else if (active_reserve_ptr[rsv->params.bound_to_cpu] == NULL){
-    //printk("zsrm.start_acct: ptr == NULL adding rsv(%d)\n",rsv->rid);
+    printk("zsrm.start_acct: ptr == NULL adding rsv(%d) to cpu(%d)\n",rsv->rid,rsv->params.bound_to_cpu);
     active_reserve_ptr[rsv->params.bound_to_cpu] = rsv;
     rsv->next_lower_priority = NULL;
     rsv->job_resumed_timestamp_nanos = timestamp_ns(); //ticks2nanos(rdtsc());
-  } else if (active_reserve_ptr[rsv->params.bound_to_cpu]->params.priority < rsv->params.priority){
-    //printk("zsrm.start_acct: ptr(%d) preempted by rsv(%d)\n",active_reserve_ptr->rid,rsv->rid);
+    if (rsv->params.enforcement_mask & ZS_ENFORCE_OVERLOAD_BUDGET_MASK){
+      exectime_enforcer_timer_start(rsv);
+    }
+  } else if (active_reserve_ptr[rsv->params.bound_to_cpu]->effective_priority < rsv->effective_priority){
+    printk("zsrm.start_acct: ptr(%d) preempted by rsv(%d) in cpu(%d)\n",active_reserve_ptr[rsv->params.bound_to_cpu]->rid,rsv->rid,rsv->params.bound_to_cpu);
     stop_accounting(active_reserve_ptr[rsv->params.bound_to_cpu], 
-		    DONT_UPDATE_HIGHEST_PRIORITY_TASK);
+		    DONT_UPDATE_HIGHEST_PRIORITY_TASK,0,0);
     rsv->next_lower_priority = active_reserve_ptr[rsv->params.bound_to_cpu];
     active_reserve_ptr[rsv->params.bound_to_cpu] = rsv;
     rsv->job_resumed_timestamp_nanos = timestamp_ns();//ticks2nanos(rdtsc());
+    if (rsv->params.enforcement_mask & ZS_ENFORCE_OVERLOAD_BUDGET_MASK){    
+      exectime_enforcer_timer_start(rsv);
+    }
   } else{
     struct zs_reserve *tmp = active_reserve_ptr[rsv->params.bound_to_cpu];
-    //printk("zsrm.start_acct: ptr(%d) top prio. rsv(%d) to queue\n",active_reserve_ptr->rid,rsv->rid);
+    printk("zsrm.start_acct: ptr(%d) top prio. rsv(%d) to cpu(%d) queue\n",active_reserve_ptr[rsv->params.bound_to_cpu]->rid,rsv->rid,rsv->params.bound_to_cpu);
     while (tmp->next_lower_priority != NULL && 
-	   tmp->next_lower_priority->params.priority >= rsv->params.priority)
+	   tmp->next_lower_priority->effective_priority >= rsv->effective_priority)
       tmp = tmp->next_lower_priority;
     rsv->next_lower_priority = tmp->next_lower_priority;
     tmp->next_lower_priority = rsv;
   }
 }
 
-void stop_accounting(struct zs_reserve *rsv, int update_active_highest_priority){
-  unsigned long long job_stop_timestamp_nanos;
+void stop_accounting(struct zs_reserve *rsv, int update_active_highest_priority,int in_enforcer_handler, int swap_task){
+  unsigned long long job_stop_timestamp_nanos,old_job_executing_nanos;
   if (active_reserve_ptr[rsv->params.bound_to_cpu] == rsv){
-    //printk("zsrm.stop_acct: ptr(%d) == rsv(%d) -- stopping\n",active_reserve_ptr->rid,rsv->rid);
+    printk("zsrm.stop_acct: active_rsv(%d) == rsv(%d) @ cpu(%d)-- stopping\n",active_reserve_ptr[rsv->params.bound_to_cpu]->rid,rsv->rid,rsv->params.bound_to_cpu);
     job_stop_timestamp_nanos = timestamp_ns();//ticks2nanos(rdtsc());
+    old_job_executing_nanos = rsv->job_executing_nanos;
     rsv->job_executing_nanos += job_stop_timestamp_nanos - 
       rsv->job_resumed_timestamp_nanos;
+    printk("zsrm.stop_acct: old_exec_nanos (%llu) exec_nanos(%llu) job_stop(%llu) job_resume(%llu)\n",
+	   old_job_executing_nanos,rsv->job_executing_nanos, job_stop_timestamp_nanos, rsv->job_resumed_timestamp_nanos);
+    if (!in_enforcer_handler){
+      if (rsv->params.enforcement_mask & ZS_ENFORCE_OVERLOAD_BUDGET_MASK){
+	exectime_enforcer_timer_stop(rsv);
+      }
+    }
     if (update_active_highest_priority){
       active_reserve_ptr[rsv->params.bound_to_cpu] = rsv->next_lower_priority;
-      if (active_reserve_ptr[rsv->params.bound_to_cpu] != NULL)
+      if (active_reserve_ptr[rsv->params.bound_to_cpu] != NULL){
+	printk("zsrm.stop_acct: calling start_account()\n");
 	start_accounting(active_reserve_ptr[rsv->params.bound_to_cpu]);
+	if (swap_task){
+	  start_accounting(rsv);
+	}
+      }
     }
   } else {
-    //printk("zsrm.stop_acct: ptr(%d) != rsv(%d) not top priority\n",active_reserve_ptr->rid,rsv->rid);
+    if (active_reserve_ptr[rsv->params.bound_to_cpu] != NULL){
+      struct zs_reserve *tmp = active_reserve_ptr[rsv->params.bound_to_cpu];
+      printk("zsrm.stop_acct: active_rsv(%d) != rsv(%d) @cpu(%d) not top priority\n",active_reserve_ptr[rsv->params.bound_to_cpu]->rid,rsv->rid,rsv->params.bound_to_cpu);
+      // just remove it from queue
+      while(tmp->next_lower_priority != NULL && tmp->next_lower_priority != rsv)
+	;
+      if (tmp->next_lower_priority == rsv){
+	tmp->next_lower_priority = rsv->next_lower_priority;
+	rsv->next_lower_priority = NULL;
+      }
+    } else {
+      printk("zsrm.stop_acct:  ERROR top == NULL expectig at least rsv(%d)\n",rsv->rid);
+    }
   }
 }
 
@@ -678,109 +723,127 @@ struct task_struct *gettask(int pid){
 }
 
 int push_to_reschedule(int i){
-	int ret;
-	unsigned long flags;
-	spin_lock_irqsave(&reschedule_lock,flags);
-	if ((top+1) < MAX_RESERVES){
-		top++;
-		reschedule_stack[top]=i;
-		ret =0;
-	} else	
-		ret=-1;
-
-	spin_unlock_irqrestore(&reschedule_lock,flags);
-	return ret;
+  int ret;
+  unsigned long flags;
+  spin_lock_irqsave(&reschedule_lock,flags);
+  if ((top+1) < MAX_RESERVES){
+    top++;
+    reschedule_stack[top]=i;
+    ret =0;
+  } else	
+    ret=-1;
+  
+  spin_unlock_irqrestore(&reschedule_lock,flags);
+  return ret;
 }
 
 int pop_to_reschedule(void){
-	int ret;
-	unsigned long flags;
-	spin_lock_irqsave(&reschedule_lock,flags);
-	if (top >=0){
-		ret = reschedule_stack[top];
-		top--;
-	} else
-		ret = -1;
-	spin_unlock_irqrestore(&reschedule_lock,flags);
-	return ret;
-}
+  int ret;
+  unsigned long flags;
+  spin_lock_irqsave(&reschedule_lock,flags);
+  if (top >=0){
+    ret = reschedule_stack[top];
+    top--;
+  } else
+    ret = -1;
+  spin_unlock_irqrestore(&reschedule_lock,flags);
+  return ret;}
 
-struct task_struct *sched_task;
 
 static void scheduler_task(void *a){
-	int rid;
-	struct sched_param p;
-	struct task_struct *task;
+  int rid;
+  struct sched_param p;
+  struct task_struct *task;
+  unsigned long flags;
+  int swap_task=0;
+  
+  while (!kthread_should_stop()) {
 
-	while (!kthread_should_stop()) {
-		while ((rid = pop_to_reschedule()) != -1) {
-		  task = gettask(reserve_table[rid].pid);
-			if (task == NULL){
-				printk("scheduler_task : wrong pid(%d) for rid(%d)\n",reserve_table[rid].pid,rid);
-				continue;
-			}
-			if (reserve_table[rid].request_stop){
-				reserve_table[rid].request_stop = 0;
-				
-				//set_task_state(task, TASK_INTERRUPTIBLE);
-				p.sched_priority = 0;
-				sched_setscheduler(task, SCHED_NORMAL, &p);
-				stop_accounting(&reserve_table[rid],
-						UPDATE_HIGHEST_PRIORITY_TASK);
+      // prevent concurrent execution with interrupts
+      spin_lock_irqsave(&zsrmlock,flags);
 
-				// measurement of enforcement
-				if (start_of_enforcement_ts_ns != 0){
-				  end_of_enforcement_ts_ns =  timestamp_ns();//ticks2nanos(rdtsc());
-				  end_of_enforcement_ts_ns -= start_of_enforcement_ts_ns;
-				  start_of_enforcement_ts_ns = 0L;
-				  if (enforcement_latency_ns_avg == 0)
-				    enforcement_latency_ns_avg = end_of_enforcement_ts_ns;
-				  else{
-#ifdef __ARMCORE__
-				    enforcement_latency_ns_avg = enforcement_latency_ns_avg + end_of_enforcement_ts_ns;
-				    do_div(enforcement_latency_ns_avg,2);
-#else
-				    enforcement_latency_ns_avg = (enforcement_latency_ns_avg + end_of_enforcement_ts_ns) / 2;
-#endif			      
-				  }
-				  
-				  if (end_of_enforcement_ts_ns > enforcement_latency_ns_worst)
-				    enforcement_latency_ns_worst = end_of_enforcement_ts_ns;
-				}
-				// end of measurement code
-			} else {
-				if (reserve_table[rid].critical_utility_mode_enforced){
-					reserve_table[rid].critical_utility_mode_enforced = 0;
-					//wake_up_process(task);
-				}
-				p.sched_priority = reserve_table[rid].effective_priority;
-				sched_setscheduler(task, SCHED_FIFO, &p);
-				reserve_table[rid].execution_status = EXEC_RUNNING;
-				start_accounting(&reserve_table[rid]);
-				if (start_of_resume_ts_ns != 0){
-				  end_of_resume_ts_ns =  timestamp_ns();
-				  end_of_resume_ts_ns -= start_of_resume_ts_ns;
-				  start_of_resume_ts_ns = 0L;
-				  if (resume_latency_ns_avg == 0){
-				    resume_latency_ns_avg = end_of_resume_ts_ns;
-				  }else{
-#ifdef __ARMCORE__
-				    resume_latency_ns_avg = resume_latency_ns_avg + end_of_resume_ts_ns;
-				    do_div(resume_latency_ns_avg,2);
-#else
-				    resume_latency_ns_avg = (resume_latency_ns_avg + end_of_resume_ts_ns) / 2;
-#endif			      
-				  }
-				  
-				  if (end_of_resume_ts_ns > resume_latency_ns_worst){
-				    resume_latency_ns_worst = end_of_resume_ts_ns;
-				  }
-				}
-			}
-		}
-		set_current_state(TASK_INTERRUPTIBLE);
-		schedule();
+    while ((rid = pop_to_reschedule()) != -1) {
+      task = gettask(reserve_table[rid].pid);
+      if (task == NULL){
+	printk("scheduler_task : wrong pid(%d) for rid(%d)\n",reserve_table[rid].pid,rid);
+	continue;
+      }
+      if (reserve_table[rid].request_stop){
+	printk("zsrmm.sched_task: stopping rsv(%d)\n",rid);
+	if (reserve_table[rid].params.enforcement_mask & ZS_ENFORCEMENT_HARD_MASK){
+	  set_task_state(task, TASK_INTERRUPTIBLE);
+	  swap_task=0;
+	} else { // ZS_ENFORCEMENT_SOFT_MASK -- DEFAULT
+	  p.sched_priority = 0;
+	  sched_setscheduler(task, SCHED_NORMAL, &p);
+	  swap_task =1;
 	}
+	set_tsk_need_resched(task);
+	reserve_table[rid].effective_priority = 0;
+	stop_accounting(&reserve_table[rid],
+			UPDATE_HIGHEST_PRIORITY_TASK,0,swap_task);
+	if (reserve_table[rid].request_stop == REQUEST_STOP_DEFER){
+	  // the job ended its execution
+	  reserve_table[rid].job_executing_nanos = 0L;
+	  printk("zsrm. executing_nanos = 0L\n");
+	}
+	reserve_table[rid].request_stop = 0;
+	// measurement of enforcement
+	if (start_of_enforcement_ts_ns != 0){
+	  end_of_enforcement_ts_ns =  timestamp_ns();//ticks2nanos(rdtsc());
+	  end_of_enforcement_ts_ns -= start_of_enforcement_ts_ns;
+	  start_of_enforcement_ts_ns = 0L;
+	  if (enforcement_latency_ns_avg == 0)
+	    enforcement_latency_ns_avg = end_of_enforcement_ts_ns;
+	  else{
+#ifdef __ARMCORE__
+	    enforcement_latency_ns_avg = enforcement_latency_ns_avg + end_of_enforcement_ts_ns;
+	    do_div(enforcement_latency_ns_avg,2);
+#else
+	    enforcement_latency_ns_avg = (enforcement_latency_ns_avg + end_of_enforcement_ts_ns) / 2;
+#endif			      
+	  }
+	  
+	  if (end_of_enforcement_ts_ns > enforcement_latency_ns_worst)
+	    enforcement_latency_ns_worst = end_of_enforcement_ts_ns;
+	}
+	// end of measurement code
+      } else {
+	if (reserve_table[rid].critical_utility_mode_enforced){
+	  reserve_table[rid].critical_utility_mode_enforced = 0;
+	  //wake_up_process(task);
+	}
+	p.sched_priority = reserve_table[rid].effective_priority;
+	sched_setscheduler(task, SCHED_FIFO, &p);
+	reserve_table[rid].execution_status = EXEC_RUNNING;
+	start_accounting(&reserve_table[rid]);
+	if (start_of_resume_ts_ns != 0){
+	  end_of_resume_ts_ns =  timestamp_ns();
+	  end_of_resume_ts_ns -= start_of_resume_ts_ns;
+	  start_of_resume_ts_ns = 0L;
+	  if (resume_latency_ns_avg == 0){
+	    resume_latency_ns_avg = end_of_resume_ts_ns;
+	  }else{
+#ifdef __ARMCORE__
+	    resume_latency_ns_avg = resume_latency_ns_avg + end_of_resume_ts_ns;
+	    do_div(resume_latency_ns_avg,2);
+#else
+	    resume_latency_ns_avg = (resume_latency_ns_avg + end_of_resume_ts_ns) / 2;
+#endif			      
+	  }
+	  
+	  if (end_of_resume_ts_ns > resume_latency_ns_worst){
+	    resume_latency_ns_worst = end_of_resume_ts_ns;
+	  }
+	}
+      }
+    }
+
+    spin_unlock_irqrestore(&zsrmlock,flags);
+    
+    set_current_state(TASK_INTERRUPTIBLE);
+    schedule();
+  }
 }
 
 
@@ -807,6 +870,60 @@ int timer2reserve(struct hrtimer *tmr){
 	return -1;
 }
 
+enum hrtimer_restart exectime_enforcer_handler(struct hrtimer *timer){
+  unsigned long flags;
+  int i;
+  int cpuidx=-1;
+  struct zs_reserve *rsv;
+
+  //printk("zsrmm: in exectime_enforcer_handler\n");
+  spin_lock_irqsave(&zsrmlock,flags);
+  for (i=0;i<MAX_CPUS;i++){
+    if(&(exectime_enforcer_timers[i]) == timer)
+      cpuidx=i;
+  }
+
+  if (cpuidx >=0){
+    // enforce reserve running in cpuidx
+    rsv = active_reserve_ptr[cpuidx];
+    if (rsv != NULL){
+      //printk("zsrmm: exectime_enforcing rsv[%d]\n",rsv->rid);
+      //stop_accounting(rsv,0,1);
+      // make sure the zs_timer is cancelled
+      hrtimer_cancel(&(rsv->zs_timer));
+      kill_reserve(rsv,1); 
+      set_tsk_need_resched(current);
+      //rsv->job_executing_nanos = 0L;
+    }
+  }
+  spin_unlock_irqrestore(&zsrmlock,flags);
+  return HRTIMER_NORESTART;
+}
+
+void exectime_enforcer_timer_stop(struct zs_reserve *rsv){
+  printk("zsrmm: canceling exectime_enforcer timer\n");
+  hrtimer_cancel(&exectime_enforcer_timers[rsv->params.bound_to_cpu]);
+}
+
+void exectime_enforcer_timer_start(struct zs_reserve *rsv){
+  ktime_t kperiod;
+  unsigned long long remaining_ns;
+  unsigned long sec,nsec;
+
+  remaining_ns = rsv->overload_exectime_nanos - rsv->job_executing_nanos;
+  if (remaining_ns >0){
+    sec = (unsigned long)(remaining_ns / 1000000000);
+    nsec = (unsigned long) (remaining_ns % 1000000000);
+    printk("zsrmm: starting exectime_enforcer_timer remaining_ns(%llu), sec(%lu) nsec(%lu)\n",remaining_ns,sec,nsec);
+    kperiod = ktime_set(sec,nsec);
+    hrtimer_init(&exectime_enforcer_timers[rsv->params.bound_to_cpu], CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+    exectime_enforcer_timers[rsv->params.bound_to_cpu].function = exectime_enforcer_handler;
+    hrtimer_start(&exectime_enforcer_timers[rsv->params.bound_to_cpu], kperiod, HRTIMER_MODE_REL);
+  } else {
+    printk("zsrmm: did not start exectime_enforcer_timer: remaining_ns negative\n");
+  }
+}
+
 enum hrtimer_restart zs_instant_handler(struct hrtimer *timer){
 	int rid;
 	unsigned long flags;
@@ -824,7 +941,7 @@ enum hrtimer_restart zs_instant_handler(struct hrtimer *timer){
 
 	// special debugging mask
 	if (!(reserve_table[rid].params.enforcement_mask & 
-	      DONT_ENFORCE_ZERO_SLACK)){
+	      DONT_ENFORCE_ZERO_SLACK_MASK)){
 	  // currently running not paused or dropped
 	  if (reserve_table[rid].execution_status == EXEC_RUNNING)
 	    period_degradation(rid);
@@ -885,9 +1002,7 @@ enum hrtimer_restart response_time_handler(struct hrtimer *timer){
 		return HRTIMER_NORESTART;
 	}
 
-	//set_task_state(task,TASK_INTERRUPTIBLE);
-	//set_tsk_need_resched(task);
-	reserve_table[rid].request_stop =1;
+	reserve_table[rid].request_stop =REQUEST_STOP_DEFER;
 	push_to_reschedule(rid);
 	wake_up_process(sched_task);
 	set_tsk_need_resched(current);
@@ -936,7 +1051,7 @@ enum hrtimer_restart period_handler(struct hrtimer *timer){
 
 	/* --- cancel all timers --- */
 	if (reserve_table[rid].params.enforcement_mask & ZS_RESPONSE_TIME_ENFORCEMENT_MASK){
-		hrtimer_cancel(&(reserve_table[rid].response_time_timer));
+	  hrtimer_cancel(&(reserve_table[rid].response_time_timer));
 	}
 	hrtimer_cancel(&(reserve_table[rid].zs_timer));
 	/* --------------------------*/
@@ -1039,6 +1154,8 @@ enum hrtimer_restart period_handler(struct hrtimer *timer){
 	    wake_up_process(sched_task);
 	    set_tsk_need_resched(task);
 	    set_tsk_need_resched(current);
+	  } else {
+	    printk("zsrmm: COULD NOT SET EXEC_RUNNING OF rsv(%d)\n",rid);
 	  }
 	  //set_tsk_need_resched(sched_task);
 	}
@@ -1287,81 +1404,87 @@ int attach_reserve(int rid, int pid){
 }
 
 int attach_reserve_transitional(int rid, int pid, struct timespec *trans_zs_instant){
-	struct sched_param p;
-	ktime_t kperiod, kzs,kresptime;
-
-	struct task_struct *task;
-	//task = find_task_by_pid_ns(pid, current->nsproxy->pid_ns);
-	task = gettask(pid);
-	if (task == NULL)
-		return -1;
-
-	reserve_table[rid].pid = pid;
-	reserve_table[rid].in_critical_mode = 0;
-	reserve_table[rid].current_degraded_mode = -1;
-	reserve_table[rid].critical_utility_mode_enforced = 0;
-	reserve_table[rid].execution_status = EXEC_RUNNING;
-	reserve_table[rid].next_lower_priority = NULL;
-	reserve_table[rid].next_paused_lower_criticality=NULL;
-
-	// init pipeline
-	reserve_table[rid].e2e_job_executing_nanos=0;
-
-	p.sched_priority = reserve_table[rid].params.priority;
-	sched_setscheduler(task,SCHED_FIFO, &p);
-
-	// if NOT APERIODIC  arrival then it is periodic. Start periodic timer
-	if (!(reserve_table[rid].params.reserve_type & APERIODIC_ARRIVAL)){
-	  printk("zsrmm: attach_reserve. Programming periodic timer reserve_type(%x)\n",reserve_table[rid].params.reserve_type);
-	  kperiod = ktime_set(reserve_table[rid].params.period.tv_sec, 
-			      reserve_table[rid].params.period.tv_nsec);
-	  hrtimer_init(&reserve_table[rid].period_timer,CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	  reserve_table[rid].period_timer.function = period_handler;
-	  hrtimer_start(&reserve_table[rid].period_timer, kperiod, HRTIMER_MODE_REL);
-	}
-
-	if (trans_zs_instant != NULL){
-	  kzs = ktime_set(trans_zs_instant->tv_sec,
-			  trans_zs_instant->tv_nsec);
-	} else {
-	  kzs = ktime_set(reserve_table[rid].params.zs_instant.tv_sec, 
-			  reserve_table[rid].params.zs_instant.tv_nsec);
-	}
-	hrtimer_init(&reserve_table[rid].zs_timer,CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	reserve_table[rid].zs_timer.function = zs_instant_handler;
-	hrtimer_start(&reserve_table[rid].zs_timer, kzs, HRTIMER_MODE_REL);
-
-	if (reserve_table[rid].params.enforcement_mask & ZS_RESPONSE_TIME_ENFORCEMENT_MASK){
-		kresptime = ktime_set(reserve_table[rid].params.response_time_instant.tv_sec,
-				reserve_table[rid].params.response_time_instant.tv_nsec);
-		hrtimer_init(&(reserve_table[rid].response_time_timer), CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-		reserve_table[rid].response_time_timer.function = response_time_handler;
-		hrtimer_start(&(reserve_table[rid].response_time_timer),kresptime, HRTIMER_MODE_REL);
-	}
-
-	//jiffies_to_timespec(jiffies, &reserve_table[rid].start_of_period);
-	now2timespec(&reserve_table[rid].start_of_period);
-	if (reserve_table[rid].params.reserve_type & PIPELINE_STAGE_ROOT){
-	  reserve_table[rid].local_e2e_start_of_period_nanos = TIMESPEC2NS(&reserve_table[rid].start_of_period);
-	}
-	start_accounting(&reserve_table[rid]);
-
-	set_tsk_need_resched(task);
-	set_tsk_need_resched(current);
-	return 0;
+  struct sched_param p;
+  ktime_t kperiod, kzs,kresptime;
+  cpumask_t cpumask;
+  
+  struct task_struct *task;
+  //task = find_task_by_pid_ns(pid, current->nsproxy->pid_ns);
+  task = gettask(pid);
+  if (task == NULL)
+    return -1;
+  
+  reserve_table[rid].pid = pid;
+  reserve_table[rid].in_critical_mode = 0;
+  reserve_table[rid].current_degraded_mode = -1;
+  reserve_table[rid].critical_utility_mode_enforced = 0;
+  reserve_table[rid].execution_status = EXEC_RUNNING;
+  reserve_table[rid].next_lower_priority = NULL;
+  reserve_table[rid].next_paused_lower_criticality=NULL;
+  
+  // init pipeline
+  reserve_table[rid].e2e_job_executing_nanos=0;
+  
+  p.sched_priority = reserve_table[rid].params.priority;
+  sched_setscheduler(task,SCHED_FIFO, &p);
+  
+  // fix cpu affinity to its own
+  cpus_clear(cpumask);
+  cpu_set(reserve_table[rid].params.bound_to_cpu,cpumask);
+  set_cpus_allowed_ptr(task,&cpumask);
+  
+  // if NOT APERIODIC  arrival then it is periodic. Start periodic timer
+  if (!(reserve_table[rid].params.reserve_type & APERIODIC_ARRIVAL)){
+    //printk("zsrmm: attach_reserve. Programming periodic timer reserve_type(%x)\n",reserve_table[rid].params.reserve_type);
+    kperiod = ktime_set(reserve_table[rid].params.period.tv_sec, 
+			reserve_table[rid].params.period.tv_nsec);
+    hrtimer_init(&reserve_table[rid].period_timer,CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+    reserve_table[rid].period_timer.function = period_handler;
+    hrtimer_start(&reserve_table[rid].period_timer, kperiod, HRTIMER_MODE_REL);
+  }
+  
+  if (trans_zs_instant != NULL){
+    kzs = ktime_set(trans_zs_instant->tv_sec,
+		    trans_zs_instant->tv_nsec);
+  } else {
+    kzs = ktime_set(reserve_table[rid].params.zs_instant.tv_sec, 
+		    reserve_table[rid].params.zs_instant.tv_nsec);
+  }
+  hrtimer_init(&reserve_table[rid].zs_timer,CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+  reserve_table[rid].zs_timer.function = zs_instant_handler;
+  hrtimer_start(&reserve_table[rid].zs_timer, kzs, HRTIMER_MODE_REL);
+  
+  if (reserve_table[rid].params.enforcement_mask & ZS_RESPONSE_TIME_ENFORCEMENT_MASK){
+    kresptime = ktime_set(reserve_table[rid].params.response_time_instant.tv_sec,
+			  reserve_table[rid].params.response_time_instant.tv_nsec);
+    hrtimer_init(&(reserve_table[rid].response_time_timer), CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+    reserve_table[rid].response_time_timer.function = response_time_handler;
+    hrtimer_start(&(reserve_table[rid].response_time_timer),kresptime, HRTIMER_MODE_REL);
+  }
+  
+  //jiffies_to_timespec(jiffies, &reserve_table[rid].start_of_period);
+  now2timespec(&reserve_table[rid].start_of_period);
+  if (reserve_table[rid].params.reserve_type & PIPELINE_STAGE_ROOT){
+    reserve_table[rid].local_e2e_start_of_period_nanos = TIMESPEC2NS(&reserve_table[rid].start_of_period);
+  }
+  start_accounting(&reserve_table[rid]);
+  
+  set_tsk_need_resched(task);
+  set_tsk_need_resched(current);
+  return 0;
 }
 
 int find_empty_entry(void){
-	int i=0;
-
-	while (i < MAX_RESERVES && reserve_table[i].params.priority != -1  )
-		i++;
-	if (i< MAX_RESERVES){
-		reserve_table[i].params.priority = 0;
-		return i;
-	} else {
-		return -1;
-	}
+  int i=0;
+  
+  while (i < MAX_RESERVES && reserve_table[i].params.priority != -1  )
+    i++;
+  if (i< MAX_RESERVES){
+    reserve_table[i].params.priority = 0;
+    return i;
+  } else {
+    return -1;
+  }
 }
 
 void finish_period_degradation(int rid, int is_pipeline_stage){
@@ -1916,7 +2039,8 @@ void end_of_job_processing(int rid, int is_pipeline_stage){
     hrtimer_cancel(&(reserve_table[rid].response_time_timer));
   }
 
-  stop_accounting(&reserve_table[rid],UPDATE_HIGHEST_PRIORITY_TASK);
+  printk("zsrmm.end_of_job: stopping rid(%d)\n",rid);
+  stop_accounting(&reserve_table[rid],UPDATE_HIGHEST_PRIORITY_TASK,0,0);
 
   if (is_pipeline_stage){
     reserve_table[rid].e2e_job_executing_nanos += reserve_table[rid].job_executing_nanos;
@@ -1940,8 +2064,10 @@ void end_of_job_processing(int rid, int is_pipeline_stage){
 
   // reset the job_executing_nanos
   reserve_table[rid].job_executing_nanos=0L;
+  printk("zsrm.end_job: executing_nanos = 0\n");
 
-  reserve_table[rid].execution_status |= EXEC_WAIT_NEXT_PERIOD;
+  //reserve_table[rid].execution_status |= EXEC_WAIT_NEXT_PERIOD;
+  reserve_table[rid].execution_status = EXEC_WAIT_NEXT_PERIOD;
 }
 
 int start_of_job_processing(int rid, long long zero_slack_adjustment_ns){
@@ -1949,7 +2075,7 @@ int start_of_job_processing(int rid, long long zero_slack_adjustment_ns){
   struct sched_param p;
   struct timespec adjusted_zs_instant;
   unsigned long long zs_instant_ns;
-  /* struct task_struct *task; */
+  struct task_struct *task;
 
   adjusted_zs_instant.tv_sec = reserve_table[rid].params.zs_instant.tv_sec;
   adjusted_zs_instant.tv_nsec = reserve_table[rid].params.zs_instant.tv_nsec;
@@ -1984,17 +2110,17 @@ int start_of_job_processing(int rid, long long zero_slack_adjustment_ns){
     reserve_table[rid].execution_status = EXEC_RUNNING;    
     start_accounting(&reserve_table[rid]);
 
-    p.sched_priority = 0;//reserve_table[rid].effective_priority;
-
-    /* sched_setscheduler(current, SCHED_FIFO, &p); */
-    /* task = gettask(reserve_table[rid].pid); */
-    /* if (task != NULL){ */
-    /*   sched_setscheduler(task, SCHED_FIFO, &p); */
-    /*   printk("zsrmm.start of job: reserve(%s) effective priority %d\n",reserve_table[rid].params.name,reserve_table[rid].effective_priority ); */
-    /*   //set_tsk_need_resched(task); */
-    /* } else { */
-    /*   printk("zsrmm.start_of_job_processing: task == NULL"); */
-    /* } */
+    //p.sched_priority = reserve_table[rid].effective_priority; //0;
+    //sched_setscheduler(current, SCHED_FIFO, &p);
+    task = gettask(reserve_table[rid].pid);
+    if (task != NULL){
+      p.sched_priority = reserve_table[rid].effective_priority; 
+      sched_setscheduler(task, SCHED_FIFO, &p);
+      printk("zsrmm.start of job: reserve(%s) effective priority %d\n",reserve_table[rid].params.name,reserve_table[rid].effective_priority );
+      //set_tsk_need_resched(task);
+    } else {
+      printk("zsrmm.start_of_job_processing: task == NULL");
+    }
   } else {
     printk("start of job processing rid name(%s): NOT SETTING PRIORITY mode enforced(%d), exec_status(0x%x)\n",
 	   reserve_table[rid].params.name,
@@ -2060,9 +2186,9 @@ int delete_reserve(int rid){
   if (reserve_table[rid].pid != -1){
     detach_reserve(rid);
   }
-	reserve_table[rid].params.priority = -1;
-	reserve_table[rid].execution_status = EXEC_BEFORE_START;
-	return 0;
+  reserve_table[rid].params.priority = -1;
+  reserve_table[rid].execution_status = EXEC_BEFORE_START;
+  return 0;
 }
 
 int delete_modal_reserve(int mrid){
@@ -2095,33 +2221,36 @@ int detach_modal_reserve(int mrid){
 }
 
 int detach_reserve(int rid){
-	struct sched_param p;
-	struct task_struct *task;
-	task = gettask(reserve_table[rid].pid);
+  struct sched_param p;
+  struct task_struct *task;
+  task = gettask(reserve_table[rid].pid);
+  
+  if (task != NULL){
+    p.sched_priority = 0;
+    sched_setscheduler(task, SCHED_NORMAL,&p);
+    set_tsk_need_resched(task);
+    if (task != current)
+      set_tsk_need_resched(current);
+  }
 
-	if (task != NULL){
-		p.sched_priority = 0;
-		sched_setscheduler(task, SCHED_NORMAL,&p);
-		set_tsk_need_resched(task);
-		if (task != current)
-			set_tsk_need_resched(current);
-	}
+  hrtimer_cancel(&(reserve_table[rid].zs_timer));
+  if (!(reserve_table[rid].params.reserve_type & APERIODIC_ARRIVAL))
+    hrtimer_cancel(&(reserve_table[rid].period_timer));
+  if (reserve_table[rid].params.enforcement_mask & ZS_RESPONSE_TIME_ENFORCEMENT_MASK){
+    hrtimer_cancel(&(reserve_table[rid].response_time_timer));
+  }
+  //stop_accounting(&reserve_table[rid], UPDATE_HIGHEST_PRIORITY_TASK,0,0);
+  
+  if (reserve_table[rid].in_critical_mode){
+    finish_period_degradation(rid,0);
+  } 
 
-	hrtimer_cancel(&(reserve_table[rid].zs_timer));
-	if (!(reserve_table[rid].params.reserve_type & APERIODIC_ARRIVAL))
-	  hrtimer_cancel(&(reserve_table[rid].period_timer));
-	if (reserve_table[rid].params.enforcement_mask & ZS_RESPONSE_TIME_ENFORCEMENT_MASK){
-		hrtimer_cancel(&(reserve_table[rid].response_time_timer));
-	}
-	stop_accounting(&reserve_table[rid], UPDATE_HIGHEST_PRIORITY_TASK);
+  stop_accounting(&reserve_table[rid], UPDATE_HIGHEST_PRIORITY_TASK,0,0);
 
-	if (reserve_table[rid].in_critical_mode){
-	  finish_period_degradation(rid,0);
-	}
-
-	// mark as detached
-	reserve_table[rid].pid = -1;
-	return 0;
+  // mark as detached
+  reserve_table[rid].pid = -1;
+  
+  return 0;
 }
 
 int raise_priority_criticality(int rid, int priority_ceiling, int criticality_ceiling){
@@ -2348,6 +2477,12 @@ static ssize_t zsrm_write
       res = -1;
     else {	
       res = 0;
+      // check parameters
+      if (call.args.reserve_parameters.bound_to_cpu > (num_online_cpus()-1) ||
+	  (call.args.reserve_parameters.bound_to_cpu <0)){
+	res = -1;
+	break;
+      }
       memcpy(&reserve_table[i].params,
 	     &(call.args.reserve_parameters), 
 	     sizeof(struct zs_reserve_params));
@@ -2364,12 +2499,12 @@ static ssize_t zsrm_write
 	reserve_table[i].params.overloaded_marginal_utility = reserve_table[i].params.criticality;
 	reserve_table[i].params.critical_util_degraded_mode = -1;
 	reserve_table[i].params.num_degraded_modes=0;
-	printk("create reserve id(%d) CRITICALITY RESERVE type (%0xF)\n",i,reserve_table[i].params.reserve_type);
+	//printk("create reserve id(%d) CRITICALITY RESERVE type (%0xF)\n",i,reserve_table[i].params.reserve_type);
       } else {
-	printk("create reserve id(%d) UTILITY RESERVE\n",i);
+	//printk("create reserve id(%d) UTILITY RESERVE\n",i);
       }
       if (reserve_table[i].params.reserve_type & PIPELINE_STAGE_TYPE_MASK){
-	printk("creating a pipeline stage reserve\n");
+	//printk("creating a pipeline stage reserve\n");
 	reserve_table[i].e2e_nominal_exectime_nanos = 
 	  reserve_table[i].params.e2e_execution_time.tv_sec * 1000000000L +
 	  reserve_table[i].params.e2e_execution_time.tv_nsec;
@@ -2377,46 +2512,6 @@ static ssize_t zsrm_write
 	  reserve_table[i].params.e2e_overload_execution_time.tv_sec * 1000000000L +
 	  reserve_table[i].params.e2e_overload_execution_time.tv_nsec;
       }
-      /* if ((reserve_table[i].params.reserve_type & PIPELINE_STAGE_ROOT) ||  */
-      /* 	  (reserve_table[i].params.reserve_type & PIPELINE_STAGE_MIDDLE)){ */
-      /* 	printk("creating a root or middle stage. Retrieving outsock\n"); */
-      /* 	// setup outsocket */
-      /* 	if ((reserve_table[i].outsock = sockfd_lookup(reserve_table[i].params.outsockfd,&err)) == NULL){ */
-      /* 	  res = err; */
-      /* 	  printk("zsrmm: could not retrieved socked from outsockfd(%d)\n",reserve_table[i].params.outsockfd); */
-      /* 	} else { */
-      /* 	  // now allocate buffer memory */
-      /* 	  reserve_table[i].outdatalen = reserve_table[i].params.outdatalen; */
-      /* 	  if ((reserve_table[i].outdata = kmalloc(reserve_table[i].outdatalen +  */
-      /* 					       sizeof(struct pipeline_header), */
-      /* 						    GFP_KERNEL)) == NULL){ */
-      /* 	    res = -1; */
-      /* 	    printk("zsrmm: kmalloc failed to allocate %lu bytes for outdata\n", */
-      /* 		   (reserve_table[i].outdatalen+sizeof(struct pipeline_header))); */
-      /* 	  } else { */
-      /* 	    printk("zsrmm: kalloc data at: %p\n",reserve_table[i].outdata); */
-      /* 	  } */
-      /* 	} */
-      /* } */
-      /* if ((reserve_table[i].params.reserve_type  & PIPELINE_STAGE_LEAF) || */
-      /* 	  (reserve_table[i].params.reserve_type  & PIPELINE_STAGE_MIDDLE)){ */
-      /* 	printk("creating a leaf or middle stage. Retrieving insock\n"); */
-      /* 	// setup insocket */
-      /* 	if ((reserve_table[i].insock = sockfd_lookup(reserve_table[i].params.insockfd,&err)) == NULL){ */
-      /* 	  res = err; */
-      /* 	  printk("error obtaining the socket from insockfd:%d\n",reserve_table[i].params.insockfd); */
-      /* 	} else { */
-      /* 	  // now allocate buffer memory */
-      /* 	  reserve_table[i].indatalen = reserve_table[i].params.indatalen; */
-      /* 	  if ((reserve_table[i].indata = kmalloc(reserve_table[i].indatalen +  */
-      /* 					       sizeof(struct pipeline_header), */
-      /* 						    GFP_KERNEL)) == NULL){ */
-      /* 	    res = -1; */
-      /* 	    printk("zsrmm: kmalloc failed to allocate %lu bytes for indata\n", */
-      /* 		   (reserve_table[i].indatalen+sizeof(struct pipeline_header))); */
-      /* 	  } */
-      /* 	} */
-      /* } */
       if (res >=0){
 	create_reserve(i);
 	res = i;
@@ -2428,144 +2523,222 @@ static ssize_t zsrm_write
     res = i;
     break;
   case SET_INITIAL_MODE_MODAL_RESERVE:
-    res = set_initial_mode_modal_reserve(call.args.set_initial_mode_params.modal_reserve_id,
-					 call.args.set_initial_mode_params.initial_mode_id);
+    if (VALID_MRID(call.args.set_initial_mode_params.modal_reserve_id) &&
+	VALID_MID(call.args.set_initial_mode_params.initial_mode_id)){
+      res = set_initial_mode_modal_reserve(call.args.set_initial_mode_params.modal_reserve_id,
+					   call.args.set_initial_mode_params.initial_mode_id);
+    } else {
+      res = -1;
+    }
     break;
   case ADD_RESERVE_TO_MODE:
-    res= add_reserve_to_mode(call.args.rsv_to_mode_params.modal_reserve_id, 
-			     call.args.rsv_to_mode_params.mode_id,
-			     call.args.rsv_to_mode_params.reserve_id);
+    if (VALID_RID(call.args.rsv_to_mode_params.reserve_id) &&
+	VALID_MRID(call.args.rsv_to_mode_params.modal_reserve_id) &&
+	VALID_MID(call.args.rsv_to_mode_params.mode_id)){
+      res= add_reserve_to_mode(call.args.rsv_to_mode_params.modal_reserve_id, 
+			       call.args.rsv_to_mode_params.mode_id,
+			       call.args.rsv_to_mode_params.reserve_id);
+    } else {
+      res = -1;
+    }
     break;
   case ADD_MODE_TRANSITION:
-    res = add_mode_transition(call.args.add_mode_transition_params.modal_reserve_id, 
+    if (VALID_MRID(call.args.add_mode_transition_params.modal_reserve_id) &&
+	VALID_TRID(call.args.add_mode_transition_params.transition_id)){
+      res = add_mode_transition(call.args.add_mode_transition_params.modal_reserve_id, 
 			      call.args.add_mode_transition_params.transition_id,
-			      &call.args.add_mode_transition_params.transition);  
+			      &call.args.add_mode_transition_params.transition);
+    } else {
+      res = -1;
+    }  
     break;
   case ATTACH_MODAL_RESERVE:
-    res = attach_modal_reserve(call.args.attach_params.reserveid,
-			       call.args.attach_params.pid);
-    modal_scheduling = 1;
+    if (VALID_MRID(call.args.attach_params.reserveid)){    
+      res = attach_modal_reserve(call.args.attach_params.reserveid,
+				 call.args.attach_params.pid);
+      modal_scheduling = 1;
+    } else {
+      res = -1;
+    }
     break;
   case DETACH_MODAL_RESERVE:
-    res = detach_modal_reserve(call.args.reserveid);
+    if (VALID_MRID(call.args.reserveid)){
+      res = detach_modal_reserve(call.args.reserveid);
+    } else {
+      res = -1;
+    }
     break;
   case DELETE_MODAL_RESERVE:
-    res = delete_modal_reserve(call.args.reserveid);
+    if (VALID_MRID(call.args.reserveid)){
+      res = delete_modal_reserve(call.args.reserveid);
+    } else {
+      res = -1;
+    }
     break;
   case CREATE_SYS_TRANSITION:
     res = create_sys_mode_transition();
     break;
   case ADD_TRANSITION_TO_SYS_TRANSITION:
-    res = add_transition_to_sys_transition(call.args.trans_to_sys_trans_params.sys_transition_id,
-					   call.args.trans_to_sys_trans_params.mrid,
-					   call.args.trans_to_sys_trans_params.transition_id);
+    if (VALID_SYS_TRANSITION_ID(call.args.trans_to_sys_trans_params.sys_transition_id)&&
+	VALID_MRID(call.args.trans_to_sys_trans_params.mrid) && 
+	VALID_TRID(call.args.trans_to_sys_trans_params.transition_id)){
+      res = add_transition_to_sys_transition(call.args.trans_to_sys_trans_params.sys_transition_id,
+					     call.args.trans_to_sys_trans_params.mrid,
+					     call.args.trans_to_sys_trans_params.transition_id);
+    } else {
+      res = -1;
+    }
     break;
   case DELETE_SYS_TRANSITION:
-    res = delete_sys_mode_transition(call.args.reserveid);
+    if (VALID_SYS_TRANSITION_ID(call.args.reserveid)){
+      res = delete_sys_mode_transition(call.args.reserveid);
+    } else {
+      res = -1;
+    }
     break;
   case MODE_SWITCH:
-    request_mode_change_ts_ns = ticks2nanos(rdtsc());
-    sys_mode_transition(call.args.mode_switch_params.transition_id);
-    mode_change_signals_sent_ts_ns=ticks2nanos(rdtsc());
-    mode_change_signals_sent_ts_ns -= request_mode_change_ts_ns;
+    if (VALID_SYS_TRANSITION_ID(call.args.mode_switch_params.transition_id)){
+      request_mode_change_ts_ns = ticks2nanos(rdtsc());
+      sys_mode_transition(call.args.mode_switch_params.transition_id);
+      mode_change_signals_sent_ts_ns=ticks2nanos(rdtsc());
+      mode_change_signals_sent_ts_ns -= request_mode_change_ts_ns;
 #ifdef __ARMCORE__
-    mode_change_latency_ns_avg = mode_change_latency_ns_avg + mode_change_signals_sent_ts_ns;
-    do_div(mode_change_latency_ns_avg,2);
+      mode_change_latency_ns_avg = mode_change_latency_ns_avg + mode_change_signals_sent_ts_ns;
+      do_div(mode_change_latency_ns_avg,2);
 #else
-    mode_change_latency_ns_avg = (mode_change_latency_ns_avg + 
-				  mode_change_signals_sent_ts_ns) / 2;
+      mode_change_latency_ns_avg = (mode_change_latency_ns_avg + 
+				    mode_change_signals_sent_ts_ns) / 2;
 #endif
-    if (mode_change_signals_sent_ts_ns > mode_change_latency_ns_worst)
-      mode_change_latency_ns_worst = mode_change_signals_sent_ts_ns;
-    
-    need_reschedule = 1;
+      if (mode_change_signals_sent_ts_ns > mode_change_latency_ns_worst)
+	mode_change_latency_ns_worst = mode_change_signals_sent_ts_ns;
+      
+      need_reschedule = 1;
+    } else {
+      res = -1;
+    }
     break;
   case ATTACH_RESERVE:
-    res = attach_reserve(call.args.attach_params.reserveid, 
-			 call.args.attach_params.pid);
+    if (VALID_RID(call.args.attach_params.reserveid)){
+      res = attach_reserve(call.args.attach_params.reserveid, 
+			   call.args.attach_params.pid);
+    } else {
+      res = -1;
+    }
     break;
   case DETACH_RESERVE:
-    res = detach_reserve(call.args.reserveid);
+    if (VALID_RID(call.args.reserveid)){
+      res = detach_reserve(call.args.reserveid);
+    } else {
+      res = -1;
+    }
     break;
   case DELETE_RESERVE:
-    res = delete_reserve(call.args.reserveid);
+    if (VALID_RID(call.args.reserveid)){
+      res = delete_reserve(call.args.reserveid);
+    } else {
+      res = -1;
+    }
     break;
   case MODAL_WAIT_NEXT_PERIOD:
-    res = modal_wait_for_next_period(call.args.reserveid);
-    need_reschedule = 1;
+    if (VALID_MRID(call.args.reserveid)){
+      res = modal_wait_for_next_period(call.args.reserveid);
+      need_reschedule = 1;
+    } else {
+      res = -1;
+    }
     break;
   case WAIT_NEXT_PERIOD:
-    res = wait_for_next_period(call.args.reserveid);
-    need_reschedule = 1;
+    if (VALID_RID(call.args.reserveid)){
+      res = wait_for_next_period(call.args.reserveid);
+      need_reschedule = 1;
+    } else {
+      res = -1;
+    }
     break;
   case INITIALIZE_NODE:
     res = start_arrival_task(call.args.initialize_node_params.fds,
 			     call.args.initialize_node_params.nfds);
     break;
   case WAIT_NEXT_ARRIVAL:
-    res = wait_for_next_arrival(call.args.wait_next_arrival_params.reserveid, 
-				call.args.wait_next_arrival_params.fds, 
-				call.args.wait_next_arrival_params.nfds,
-				&flags);
-    need_reschedule = 1;
+    if (VALID_RID(call.args.wait_next_arrival_params.reserveid)){
+      res = wait_for_next_arrival(call.args.wait_next_arrival_params.reserveid, 
+				  call.args.wait_next_arrival_params.fds, 
+				  call.args.wait_next_arrival_params.nfds,
+				  &flags);
+      need_reschedule = 1;
+    } else {
+      res = -1;
+    }
     break;
   case WAIT_NEXT_LEAF_STAGE_ARRIVAL:
-    if (!(reserve_table[call.args.wait_next_leaf_stage_arrival_params.reserveid].params.reserve_type & PIPELINE_STAGE_LEAF)){
-      printk("zsrmm: wait_next_leaf_stage_arrival call on wrong reserve (rid:%d) type(%X)\n",call.args.wait_next_leaf_stage_arrival_params.reserveid, reserve_table[call.args.wait_next_leaf_stage_arrival_params.reserveid].params.reserve_type);
-      res = -1;
-    } else {
-      res  = wait_for_next_leaf_stage_arrival(call.args.wait_next_leaf_stage_arrival_params.reserveid, &flags,
-					      call.args.wait_next_leaf_stage_arrival_params.fd,
-					      call.args.wait_next_leaf_stage_arrival_params.usrindata,
-					      call.args.wait_next_leaf_stage_arrival_params.usrindatalen,
-					      call.args.wait_next_leaf_stage_arrival_params.flags,
-					      call.args.wait_next_leaf_stage_arrival_params.addr,
-					      call.args.wait_next_leaf_stage_arrival_params.addr_len);
-      if (res >= 0){
-	need_reschedule = 1;
+    if (VALID_RID(call.args.wait_next_leaf_stage_arrival_params.reserveid)){
+      if (!(reserve_table[call.args.wait_next_leaf_stage_arrival_params.reserveid].params.reserve_type & PIPELINE_STAGE_LEAF)){
+	printk("zsrmm: wait_next_leaf_stage_arrival call on wrong reserve (rid:%d) type(%X)\n",call.args.wait_next_leaf_stage_arrival_params.reserveid, reserve_table[call.args.wait_next_leaf_stage_arrival_params.reserveid].params.reserve_type);
+	res = -1;
+      } else {
+	res  = wait_for_next_leaf_stage_arrival(call.args.wait_next_leaf_stage_arrival_params.reserveid, &flags,
+						call.args.wait_next_leaf_stage_arrival_params.fd,
+						call.args.wait_next_leaf_stage_arrival_params.usrindata,
+						call.args.wait_next_leaf_stage_arrival_params.usrindatalen,
+						call.args.wait_next_leaf_stage_arrival_params.flags,
+						call.args.wait_next_leaf_stage_arrival_params.addr,
+						call.args.wait_next_leaf_stage_arrival_params.addr_len);
+	if (res >= 0){
+	  need_reschedule = 1;
+	}
       }
+    } else {
+      res = -1;
     }
     break;
   case WAIT_NEXT_STAGE_ARRIVAL:
-    if (!(reserve_table[call.args.wait_next_stage_arrival_params.reserveid].params.reserve_type & PIPELINE_STAGE_MIDDLE)){
-      res = -1;
-    } else {
-      res = wait_for_next_stage_arrival(call.args.wait_next_stage_arrival_params.reserveid,
-					&flags,
-					call.args.wait_next_stage_arrival_params.fd,
-					call.args.wait_next_stage_arrival_params.usrdata,
-					call.args.wait_next_stage_arrival_params.usrdatalen,
-					call.args.wait_next_stage_arrival_params.flags,
-					call.args.wait_next_stage_arrival_params.outaddr,
-					call.args.wait_next_stage_arrival_params.outaddrlen,
-					call.args.wait_next_stage_arrival_params.inaddr,
-					call.args.wait_next_stage_arrival_params.inaddrlen,
-					call.args.wait_next_stage_arrival_params.io_flag);
-      if (res >=0){
-	need_reschedule = 1;
+    if (VALID_RID(call.args.wait_next_stage_arrival_params.reserveid)){
+      if (!(reserve_table[call.args.wait_next_stage_arrival_params.reserveid].params.reserve_type & PIPELINE_STAGE_MIDDLE)){
+	res = -1;
+      } else {
+	res = wait_for_next_stage_arrival(call.args.wait_next_stage_arrival_params.reserveid,
+					  &flags,
+					  call.args.wait_next_stage_arrival_params.fd,
+					  call.args.wait_next_stage_arrival_params.usrdata,
+					  call.args.wait_next_stage_arrival_params.usrdatalen,
+					  call.args.wait_next_stage_arrival_params.flags,
+					  call.args.wait_next_stage_arrival_params.outaddr,
+					  call.args.wait_next_stage_arrival_params.outaddrlen,
+					  call.args.wait_next_stage_arrival_params.inaddr,
+					  call.args.wait_next_stage_arrival_params.inaddrlen,
+					  call.args.wait_next_stage_arrival_params.io_flag);
+	if (res >=0){
+	  need_reschedule = 1;
+	}
       }
+    } else {
+      res = -1;
     }
     break;
   case WAIT_NEXT_ROOT_PERIOD:
-    if (!(reserve_table[call.args.wait_next_root_stage_period_params.reserveid].params.reserve_type & PIPELINE_STAGE_ROOT)){
-      printk("zsrmm: eror in wait_next_root_period rid(%d) wrong type(0x%X)\n",
-	     call.args.wait_next_root_stage_period_params.reserveid,
-	     reserve_table[call.args.wait_next_root_stage_period_params.reserveid].params.reserve_type);
-      res = -1;
-    } else {
-      res = wait_for_next_root_period(call.args.wait_next_root_stage_period_params.reserveid, 
-				      call.args.wait_next_root_stage_period_params.fd,
-				      call.args.wait_next_root_stage_period_params.usroutdata,
-				      call.args.wait_next_root_stage_period_params.usroutdatalen,
-				      call.args.wait_next_root_stage_period_params.flags,
-				      call.args.wait_next_root_stage_period_params.addr,
-				      call.args.wait_next_root_stage_period_params.addr_len);
-      if (res >=0){
-	need_reschedule = 1;
+    if (VALID_RID(call.args.wait_next_root_stage_period_params.reserveid)){
+      if (!(reserve_table[call.args.wait_next_root_stage_period_params.reserveid].params.reserve_type & PIPELINE_STAGE_ROOT)){
+	printk("zsrmm: eror in wait_next_root_period rid(%d) wrong type(0x%X)\n",
+	       call.args.wait_next_root_stage_period_params.reserveid,
+	       reserve_table[call.args.wait_next_root_stage_period_params.reserveid].params.reserve_type);
+	res = -1;
       } else {
-	printk("zsrmm: error in wait_next_root_period rid(%d) executing wait_for_next_root_period() internal call\n",
-	       call.args.wait_next_root_stage_period_params.reserveid);
+	res = wait_for_next_root_period(call.args.wait_next_root_stage_period_params.reserveid, 
+					call.args.wait_next_root_stage_period_params.fd,
+					call.args.wait_next_root_stage_period_params.usroutdata,
+					call.args.wait_next_root_stage_period_params.usroutdatalen,
+					call.args.wait_next_root_stage_period_params.flags,
+					call.args.wait_next_root_stage_period_params.addr,
+					call.args.wait_next_root_stage_period_params.addr_len);
+	if (res >=0){
+	  need_reschedule = 1;
+	} else {
+	  printk("zsrmm: error in wait_next_root_period rid(%d) executing wait_for_next_root_period() internal call\n",
+		 call.args.wait_next_root_stage_period_params.reserveid);
+	}
       }
+    } else {
+      res = -1;
     }
     break;
   case NOTIFY_ARRIVAL:
@@ -2664,6 +2837,8 @@ static struct file_operations zsrm_fops;
 
 static void
 zsrm_cleanup_module(){
+  int i;
+  unsigned long flags;
 
   if (dev_class){
     device_destroy(dev_class, MKDEV(dev_major, 0));
@@ -2675,6 +2850,15 @@ zsrm_cleanup_module(){
     class_destroy(dev_class);
   /* return back the device number. */
   unregister_chrdev_region(dev_id, 1);	
+
+  printk("zsrm.cleanup(): about to cancel enforcer timers\n");
+  //lock 
+  spin_lock_irqsave(&zsrmlock,flags);
+  for (i=0;i<MAX_CPUS;i++){
+    hrtimer_cancel(&exectime_enforcer_timers[i]);
+  }
+  spin_unlock_irqrestore(&zsrmlock,flags);
+  
 }
 
 static int __init zsrm_init(void)
@@ -2697,6 +2881,8 @@ static int __init zsrm_init(void)
   for (i=0;i<MAX_CPUS;i++){
     active_reserve_ptr[i] = NULL;
     head_paused_reserve_ptr[i] = NULL;
+    hrtimer_init(&exectime_enforcer_timers[i], CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+    exectime_enforcer_timers[i].function = exectime_enforcer_handler;
   }
 
   // get do_sys_poll pointer
@@ -2890,7 +3076,7 @@ void test_accounting(void){
   while (time_before(jiffies, waituntil))
     ;
 
-  stop_accounting(&reserve_table[rsvid1],1);
+  stop_accounting(&reserve_table[rsvid1],1,0,0);
   printk("zsrm: t1 c: %lld\n",reserve_table[rsvid1].job_executing_nanos);
   reserve_table[rsvid1].job_executing_nanos = 0L;
 
@@ -2898,7 +3084,7 @@ void test_accounting(void){
   while(time_before(jiffies,waituntil))
     ;
 
-  stop_accounting(&reserve_table[rsvid2],1);
+  stop_accounting(&reserve_table[rsvid2],1,0,0);
   printk("zsrm: t2 c: %lld\n",reserve_table[rsvid2].job_executing_nanos);
   printk("zsrm: t3 c: %lld\n",reserve_table[rsvid3].job_executing_nanos);
   reserve_table[rsvid2].job_executing_nanos = 0L;
@@ -2913,7 +3099,7 @@ void test_accounting(void){
   while(time_before(jiffies,waituntil))
     ;
 
-  stop_accounting(&reserve_table[rsvid1],1);
+  stop_accounting(&reserve_table[rsvid1],1,0,0);
   printk("zsrm: t1 c: %lld\n",reserve_table[rsvid1].job_executing_nanos);
   printk("zsrm: t2 c: %lld\n",reserve_table[rsvid2].job_executing_nanos);
   printk("zsrm: t3 c: %lld\n",reserve_table[rsvid3].job_executing_nanos);
@@ -2925,6 +3111,13 @@ static void __exit zsrm_exit(void)
   if (timer_started)
     hrtimer_cancel(&ht);
   
+  // empty rescheduling stack
+  top = -1;
+  kthread_stop(sched_task);
+  if (arrival_task != NULL){
+    kthread_stop(arrival_task);
+  }
+
   delete_all_reserves();
   
   delete_all_modal_reserves();
@@ -2933,6 +3126,8 @@ static void __exit zsrm_exit(void)
   
   zsrm_cleanup_module();
   
+  /* // empty rescheduling stack */
+  /* top = -1; */
   /* kthread_stop(sched_task); */
   /* if (arrival_task != NULL){ */
   /*   kthread_stop(arrival_task); */

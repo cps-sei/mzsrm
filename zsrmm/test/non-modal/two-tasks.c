@@ -15,7 +15,7 @@
 #include <sys/sem.h>
 #include <sched.h>
 
-#include "busy.h"
+#include "../busy.h"
 
 #ifdef SYS_gettid
 #define gettid() syscall(SYS_gettid)
@@ -35,6 +35,8 @@ unsigned long long timestamps_ns3[MAX_TIMESTAMPS];
 
 int sync_start_semid;
 int idle_start_semid;
+int task1_ready_semid;
+int task2_ready_semid;
 
 void *task1(void *argp){
   struct zs_reserve_params cpuattr;
@@ -71,7 +73,7 @@ void *task1(void *argp){
   cpuattr.overloaded_marginal_utility = 1;
   cpuattr.critical_util_degraded_mode = -1;
   cpuattr.num_degraded_modes=0;
-  cpuattr.enforcement_mask=0;
+  cpuattr.enforcement_mask=0;//ZS_ENFORCEMENT_HARD_MASK;
   cpuattr.bound_to_cpu = 0;
 
   if ((sched = zs_open_sched()) == -1){
@@ -86,17 +88,27 @@ void *task1(void *argp){
     return NULL;
   }
   
+  if (zs_attach_reserve(sched,rid,gettid())<0){
+    printf("could not attached reserve\n");
+    return NULL;
+  }
+
   struct sembuf sops;
+
+  // tell parent ready
+  sops.sem_num=0;
+  sops.sem_op = 1; 
+  sops.sem_flg = 0;
+  if (semop(task1_ready_semid, &sops,1)<0){
+    printf("error in semop up\n");
+  }
+
+  // wait for parent to signal go
   sops.sem_num=0;
   sops.sem_op = -1; // down
   sops.sem_flg = 0;
   if (semop(sync_start_semid,&sops,1)<0){
     printf("error on sync star sem down\n");
-  }
-
-  if (zs_attach_reserve(sched,rid,gettid())<0){
-    printf("could not attached reserve\n");
-    return NULL;
   }
 
   printf("task 1 getting into loop\n");
@@ -150,7 +162,7 @@ void *task2(void *argp){
   cpuattr.overloaded_marginal_utility = 2;
   cpuattr.critical_util_degraded_mode = -1;
   cpuattr.num_degraded_modes=0;
-  cpuattr.enforcement_mask=0;
+  cpuattr.enforcement_mask=0;//ZS_ENFORCEMENT_HARD_MASK;
   cpuattr.bound_to_cpu = 0;
 
   if ((sched = zs_open_sched()) == -1){
@@ -165,7 +177,22 @@ void *task2(void *argp){
     return NULL;
   }
 
+  if (zs_attach_reserve(sched,rid,gettid())<0){
+    printf("could not attach reserve\n");
+    return NULL;
+  }
+
   struct sembuf sops;
+
+  // tell parent ready
+  sops.sem_num=0;
+  sops.sem_op = 1; 
+  sops.sem_flg = 0;
+  if (semop(task2_ready_semid, &sops,1)<0){
+    printf("error in semop up\n");
+  }
+
+  // wait for parent to signal go
   sops.sem_num=0;
   sops.sem_op = -1; // down
   sops.sem_flg = 0;
@@ -173,18 +200,12 @@ void *task2(void *argp){
     printf("error on sync star sem down\n");
   }
 
-
-  if (zs_attach_reserve(sched,rid,gettid())<0){
-    printf("could not attach reserve\n");
-    return NULL;
-  }
-
   printf("task 2 about to start\n");
   for (i=0;i<10;i++){
     if (i == 0)
       busy_timestamped(350,timestamps_ns2, MAX_TIMESTAMPS,&bufidx2);
     else
-      busy_timestamped(350,timestamps_ns2, MAX_TIMESTAMPS,&bufidx2);
+      busy_timestamped(100,timestamps_ns2, MAX_TIMESTAMPS,&bufidx2);
     printf("task2 before wait next period\n");
     zs_wait_next_period(sched,rid);
     printf("task2 after wait next period\n");
@@ -269,6 +290,32 @@ int main(int argc, char *argv[]){
     return -1;
   }
 
+
+  // create task1 ready semaphore
+  if ((task1_ready_semid = semget(IPC_PRIVATE, 1, IPC_CREAT|0777)) <0){
+    perror("creating the semaphone\n");
+    return -1;
+  }
+
+  arg.val = 0;
+  if (semctl(task1_ready_semid, 0, SETVAL, arg) < 0){
+    printf("Error setting sem to zero\n");
+    return -1;
+  }
+
+  // create task2 ready semaphore
+  if ((task2_ready_semid = semget(IPC_PRIVATE, 1, IPC_CREAT|0777)) <0){
+    perror("creating the semaphone\n");
+    return -1;
+  }
+
+  arg.val = 0;
+  if (semctl(task2_ready_semid, 0, SETVAL, arg) < 0){
+    printf("Error setting sem to zero\n");
+    return -1;
+  }
+
+
   // create idle start semaphore
   if ((idle_start_semid = semget(IPC_PRIVATE, 1, IPC_CREAT|0777)) <0){
     perror("creating the semaphone\n");
@@ -297,12 +344,28 @@ int main(int argc, char *argv[]){
   }
 
   // let the threads prepare -- In your marks, get set...
-  sleep(3);
+  //sleep(3);
+
+  struct sembuf sops;
+
+  sops.sem_num=0;
+  sops.sem_op = -1; // down
+  sops.sem_flg = 0;
+  if (semop(task1_ready_semid,&sops,1)<0){
+    printf("error on sync star sem down\n");
+  }
+
+
+  sops.sem_num=0;
+  sops.sem_op = -1; // down
+  sops.sem_flg = 0;
+  if (semop(task2_ready_semid,&sops,1)<0){
+    printf("error on sync star sem down\n");
+  }
 
   start_timestamp_ns = now_ns();//ticks2nanos(rdtsc());
 
   // Go!
-  struct sembuf sops;
   sops.sem_num=0;
   sops.sem_op = 3; // three ups one for each task including idle task
   sops.sem_flg = 0;
@@ -363,6 +426,13 @@ int main(int argc, char *argv[]){
   }
 
   if (semctl(idle_start_semid, 0, IPC_RMID)<0){
+    printf("error removing semaphore\n");
+  }
+
+  if (semctl(task1_ready_semid, 0, IPC_RMID)<0){
+    printf("error removing semaphore\n");
+  }
+  if (semctl(task2_ready_semid, 0, IPC_RMID)<0){
     printf("error removing semaphore\n");
   }
 

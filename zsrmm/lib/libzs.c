@@ -561,3 +561,42 @@ int zs_get_scheduler_priority(int sched){
   ret = write(sched,&call, sizeof(call));
   return ret;
 }
+
+int zs_next_debug_trace_record(int sched, struct zsrm_debug_trace_record *rec){
+  struct api_call call;
+  int ret;
+
+  call.api_id = GET_NEXT_DEBUG_EVENT;
+  ret = write(sched,&call,sizeof(call));
+  
+
+  //call.api_id = NOTIFY_ARRIVAL;
+  //call.args.notify_arrival_params.fds = fds;
+  //call.args.notify_arrival_params.nfds = nfds;
+
+  if (ret == 1 && rec != NULL){
+    rec->timestamp  = call.args.next_debug_event_params.timestamp;
+    rec->event_type = call.args.next_debug_event_params.event_type;
+    rec->event_param = call.args.next_debug_event_params.event_param;
+  }
+
+  return ret;
+}
+
+int zs_reset_debug_trace_write_index(int sched){
+  struct api_call call;
+  int ret;
+
+  call.api_id = RESET_DEBUG_TRACE_WRITE_INDEX;
+  ret = write(sched,&call, sizeof(call));
+  return ret;
+}
+
+int zs_reset_debug_trace_read_index(int sched){
+  struct api_call call;
+  int ret;
+
+  call.api_id = RESET_DEBUG_TRACE_READ_INDEX;
+  ret = write(sched,&call, sizeof(call));
+  return ret;
+}

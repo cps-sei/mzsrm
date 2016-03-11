@@ -33,6 +33,9 @@ unsigned long long timestamps_ns1[MAX_TIMESTAMPS];
 unsigned long long timestamps_ns2[MAX_TIMESTAMPS];
 unsigned long long timestamps_ns3[MAX_TIMESTAMPS];
 
+int rid1;
+int rid2;
+
 int sync_start_semid;
 int idle_start_semid;
 
@@ -85,6 +88,8 @@ void *task1(void *argp){
     printf("could not create reservation\n");
     return NULL;
   }
+
+  rid1=rid;
   
   struct sembuf sops;
   sops.sem_num=0;
@@ -165,6 +170,8 @@ void *task2(void *argp){
     return NULL;
   }
 
+  rid2=rid;
+
   struct sembuf sops;
   sops.sem_num=0;
   sops.sem_op = -1; // down
@@ -228,6 +235,8 @@ void *idletask(void *argp){
 }
 
 int main(int argc, char *argv[]){
+  int sched;
+  struct zsrm_debug_trace_record drec;
   pthread_t tid1,tid2,tid3;
   unsigned long long start_timestamp_ns;
   long idx;
@@ -280,6 +289,14 @@ int main(int argc, char *argv[]){
     printf("Error setting sem to zero\n");
     return -1;
   }
+
+  if ((sched = zs_open_sched()) == -1){
+    printf("error opening the scheduler\n");
+    return -1;
+  }
+
+  zs_reset_debug_trace_write_index(sched);
+  zs_reset_debug_trace_read_index(sched);
 
   if (pthread_create(&tid1,NULL, task1, NULL) != 0){
     printf("Error creating thread 1\n");
@@ -348,15 +365,29 @@ int main(int argc, char *argv[]){
   }
 
   for (idx = 0 ; idx < bufidx1 ; idx++){
-    fprintf(fid1,"%llu 1\n",timestamps_ns1[idx]-start_timestamp_ns);
+    fprintf(fid1,"%llu %d\n",timestamps_ns1[idx]-start_timestamp_ns, rid1);
   }
 
   for (idx = 0 ; idx < bufidx2 ; idx++){
-    fprintf(fid2,"%llu 2\n",timestamps_ns2[idx] -start_timestamp_ns);
+    fprintf(fid2,"%llu %d\n",timestamps_ns2[idx] -start_timestamp_ns,rid2);
   }
 
   fclose(fid1);
   fclose(fid2);
+
+  FILE* fid3 = fopen("ts-kernel.txt","w+");
+  if (fid3 ==NULL){
+    printf("error opening ts-kernel.txt\n");
+    return -1;
+  }
+
+  while (zs_next_debug_trace_record(sched,&drec)>0){
+    // transform into ms
+    drec.timestamp = drec.timestamp / 1000000;
+    fprintf(fid3,"%llu %u %d\n",(drec.timestamp-start_timestamp_ns),drec.event_type, drec.event_param);
+  }
+
+  fclose(fid3);
 
   if (semctl(sync_start_semid, 0, IPC_RMID)<0){
     printf("error removing semaphore\n");

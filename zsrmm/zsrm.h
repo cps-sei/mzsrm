@@ -96,7 +96,7 @@ DM-0000891
 #define EXEC_RUNNING 2
 #define EXEC_ENFORCED_PAUSED 4
 #define EXEC_ENFORCED_DROPPED 8
-#define EXEC_DEFERRED 16
+#define EXEC_ENFORCED_DEFERRED 16
 
 #define WAIT_NEXT_PERIOD 20
 
@@ -112,6 +112,10 @@ DM-0000891
 #define INITIALIZE_NODE 29
 #define NOTIFY_ARRIVAL 30
 #define GET_SCHEDULER_PRIORITY 31
+
+#define GET_NEXT_DEBUG_EVENT 32
+#define RESET_DEBUG_TRACE_WRITE_INDEX 33
+#define RESET_DEBUG_TRACE_READ_INDEX 34
 
 #define TIMER_ZS  1
 #define TIMER_ENF 2
@@ -240,6 +244,26 @@ struct zs_modal_transition_entry{
   int in_use;
 };
 
+
+// available to both user space and kernel
+
+#define ZSRM_DEBUG_EVENT_ZS_SUSPENSION          0
+#define ZSRM_DEBUG_EVENT_ZS_DEFER               1
+#define ZSRM_DEBUG_EVENT_OVERLOAD_ENFORCEMENT   2
+#define ZSRM_DEBUG_EVENT_MODULE_STARTED         3
+#define ZSRM_DEBUG_EVENT_RESUME_NEXT_PERIOD     4
+#define ZSRM_DEBUG_EVENT_RESUME_NOW             5
+#define ZSRM_DEBUG_EVENT_JOB_ARRIVAL            6
+#define ZSRM_DEBUG_EVENT_JOB_INDIRECT_HARD_STOP 7
+#define ZSRM_DEBUG_EVENT_JOB_INDIRECT_SOFT_STOP 8
+#define ZSRM_DEBUG_EVENT_STOP_ACCT              9
+#define ZSRM_DEBUG_EVENT_START_ACCT             10
+
+struct zsrm_debug_trace_record {
+  unsigned long long timestamp;
+  unsigned int event_type;
+  int event_param;
+};
 
 #ifdef __KERNEL__
 
@@ -388,6 +412,9 @@ int notify_arrival(int __user *fds, int nfds);
 void exectime_enforcer_timer_stop(struct zs_reserve *rsv);
 void exectime_enforcer_timer_start(struct zs_reserve *rsv);
 
+struct zsrm_debug_trace_record * zsrm_next_debug_event(void);
+void zsrm_add_debug_event(unsigned long long ts, unsigned int event, int param);
+
 #endif
 
 struct attach_api{
@@ -478,6 +505,12 @@ struct notify_arrival_api{
   int sched;
 };
 
+struct next_debug_event_api{
+  unsigned long long timestamp;
+  unsigned int event_type;
+  int event_param;
+};
+
 struct api_call{
   int api_id;
   union {
@@ -497,6 +530,7 @@ struct api_call{
     struct wait_next_root_stage_period_api wait_next_root_stage_period_params;
     struct initialize_node_api initialize_node_params;
     struct notify_arrival_api notify_arrival_params;
+    struct next_debug_event_api next_debug_event_params;
   }args;
 };
 
@@ -540,6 +574,10 @@ int zs_get_pipeline_header_size(int fid);
 int zs_get_pipeline_header_signature(int fid);
 void *zs_alloc_stage_msg_packet(int sched_fd, size_t size);
 void zs_free_msg_packet(int sched_fd, void *buf);
+
+int zs_next_debug_trace_record(int sched, struct zsrm_debug_trace_record *rec);
+int zs_reset_debug_trace_write_index(int sched);
+int zs_reset_debug_trace_read_index(int sched);
 
 #ifndef __KERNEL__
 pthread_t zs_start_node(int sched, int *fds, unsigned int nfds);

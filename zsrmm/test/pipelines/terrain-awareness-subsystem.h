@@ -61,7 +61,7 @@ void *ground_radar_task(void *argp){
   cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
   cpuattr.reserve_type = CRITICALITY_RESERVE | PIPELINE_STAGE_ROOT;
-  cpuattr.enforcement_mask = 0;//DONT_ENFORCE_ZERO_SLACK;
+  cpuattr.enforcement_mask = 0;//ZS_ENFORCEMENT_HARD_MASK;//DONT_ENFORCE_ZERO_SLACK;
   cpuattr.e2e_execution_time.tv_sec = 1;
   cpuattr.e2e_execution_time.tv_nsec = 548000000;
   cpuattr.e2e_overload_execution_time.tv_sec = 1;
@@ -203,7 +203,7 @@ void *terrain_distance_task(void *argp){
   cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
   cpuattr.reserve_type = CRITICALITY_RESERVE | PIPELINE_STAGE_MIDDLE | APERIODIC_ARRIVAL;
-  cpuattr.enforcement_mask = 0;//DONT_ENFORCE_ZERO_SLACK;
+  cpuattr.enforcement_mask = ZS_ENFORCEMENT_HARD_MASK;//DONT_ENFORCE_ZERO_SLACK;
   cpuattr.e2e_execution_time.tv_sec = 1;
   cpuattr.e2e_execution_time.tv_nsec = 548000000;
   cpuattr.e2e_overload_execution_time.tv_sec = 1;
@@ -360,7 +360,7 @@ void *time_to_terrain_task(void *argp){
   cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
   cpuattr.reserve_type = CRITICALITY_RESERVE | PIPELINE_STAGE_MIDDLE | APERIODIC_ARRIVAL;
-  cpuattr.enforcement_mask = 0;//DONT_ENFORCE_ZERO_SLACK;
+  cpuattr.enforcement_mask = ZS_ENFORCEMENT_HARD_MASK;//DONT_ENFORCE_ZERO_SLACK;
   cpuattr.e2e_execution_time.tv_sec = 1;
   cpuattr.e2e_execution_time.tv_nsec = 548000000;
   cpuattr.e2e_overload_execution_time.tv_sec = 1;
@@ -525,7 +525,7 @@ void *terrain_warning_task(void *argp){
   cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
   cpuattr.reserve_type = CRITICALITY_RESERVE | PIPELINE_STAGE_LEAF | APERIODIC_ARRIVAL;
-  cpuattr.enforcement_mask = 0;//DONT_ENFORCE_ZERO_SLACK;
+  cpuattr.enforcement_mask = ZS_ENFORCEMENT_HARD_MASK;//DONT_ENFORCE_ZERO_SLACK;
   cpuattr.e2e_execution_time.tv_sec = 1;
   cpuattr.e2e_execution_time.tv_nsec = 548000000;
   cpuattr.e2e_overload_execution_time.tv_sec = 1;

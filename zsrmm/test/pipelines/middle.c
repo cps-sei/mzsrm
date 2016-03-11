@@ -120,7 +120,7 @@ int main(int argc, char * argv[]){
   cpuattr.normal_marginal_utility=7;
   cpuattr.overloaded_marginal_utility=7;
   cpuattr.num_degraded_modes=0;
-  cpuattr.enforcement_mask= DONT_ENFORCE_ZERO_SLACK;
+  cpuattr.enforcement_mask= DONT_ENFORCE_ZERO_SLACK_MASK;
   cpuattr.reserve_type = CRITICALITY_RESERVE | PIPELINE_STAGE_MIDDLE | APERIODIC_ARRIVAL;
   cpuattr.e2e_execution_time.tv_sec = 3;
   cpuattr.e2e_execution_time.tv_nsec = 0;

@@ -87,6 +87,7 @@ int fds[16];
 
 int main(int argc, char *argv[]){
   int sched;
+  struct zsrm_debug_trace_record drec;
   pthread_t tid_airspeed,tid_lift,tid_stall,tid_angle;
   pthread_t tid_gps_position, tid_stop_distance, tid_stop_location, tid_virtual_runway;
   pthread_t tid_air_radar, tid_object_identification, tid_track_building, tid_traffic_warning;
@@ -322,6 +323,9 @@ int main(int argc, char *argv[]){
     return -1;
   }
 
+  zs_reset_debug_trace_write_index(sched);
+  zs_reset_debug_trace_read_index(sched);
+
   start_timestamp_ns = now_ns();//ticks2nanos(rdtsc());
 
   // Go!
@@ -372,6 +376,8 @@ int main(int argc, char *argv[]){
   printf("time to terrain finished\n");
   pthread_join(tid_terrain_warning,NULL);
   printf("terrain warning finished \n");
+
+  printf("all finished. Saving timing data...\n");
 
   FILE* fid1 = fopen("ts-airspeed.txt","w+");
   if (fid1==NULL){
@@ -537,6 +543,22 @@ int main(int argc, char *argv[]){
   }
   fclose(fid1);
 
+  FILE* fidk = fopen("ts-kernel.txt","w+");
+  if (fidk ==NULL){
+    printf("error opening ts-kernel.txt\n");
+    return -1;
+  }
+
+  printf("saving kernel events...\n");
+
+  while (zs_next_debug_trace_record(sched,&drec)>0){
+    // transform into ms
+    drec.timestamp = drec.timestamp / 1000000L;
+    drec.timestamp = drec.timestamp - start_timestamp_ns;
+    fprintf(fidk,"%llu %u %d\n",drec.timestamp,drec.event_type, drec.event_param);
+  }
+
+  fclose(fidk);
 
   if (semctl(sync_start_semid, 0, IPC_RMID)<0){
     printf("error removing semaphore\n");
@@ -545,4 +567,6 @@ int main(int argc, char *argv[]){
   printf("shutting down arrival server\n");
   zs_stop_node(nodetid);
 
+  zs_close_sched(sched);
+ 
 }

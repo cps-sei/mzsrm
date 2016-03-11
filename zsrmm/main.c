@@ -39,6 +39,8 @@ Carnegie Mellon® is registered in the U.S. Patent and Trademark Office by Carne
 DM-0000891
 */
 
+// change for test
+
 #include <linux/unistd.h>
 #include <linux/math64.h>
 #include <asm/current.h>
@@ -82,6 +84,39 @@ MODULE_LICENSE("GPL");
 #define __ZSRM_TSC_CLOCK__
 
 #define DEVICE_NAME "zsrmm"
+
+/*******************************
+ ********** DEBUGGING **********
+ *******************************
+ */
+
+#define ZSRM_DEBUG_TRACE_SIZE 1000
+
+unsigned int zsrm_debug_trace_read_index=0;
+unsigned int zsrm_debug_trace_write_index=0;
+struct zsrm_debug_trace_record zsrm_debug_trace[ZSRM_DEBUG_TRACE_SIZE];
+
+void zsrm_add_debug_event(unsigned long long ts, unsigned int event, int param){
+  if (zsrm_debug_trace_write_index < ZSRM_DEBUG_TRACE_SIZE){
+    zsrm_debug_trace[zsrm_debug_trace_write_index].timestamp=ts;
+    zsrm_debug_trace[zsrm_debug_trace_write_index].event_type=event;
+    zsrm_debug_trace[zsrm_debug_trace_write_index].event_param=param;
+    zsrm_debug_trace_write_index++;
+  }
+}
+
+struct zsrm_debug_trace_record * zsrm_next_debug_event(){
+  if (zsrm_debug_trace_read_index < zsrm_debug_trace_write_index){
+    return &(zsrm_debug_trace[zsrm_debug_trace_read_index++]);
+  } else {
+    return NULL;
+  }
+}
+
+/*******************************
+ ********** END DEBUGGING ******
+ *******************************
+ */
 
 #ifdef __ARMCORE__
 
@@ -403,6 +438,7 @@ void kill_reserve(struct zs_reserve *rsv, int in_interrupt_context){
   struct task_struct *task;
   struct sched_param p;
   //char *type = (rsv->params.reserve_type & APERIODIC_ARRIVAL?"APERIODIC":"PERIODIC");
+  printk("zsrm.kill_reserve: rid(%d)\n",rsv->rid);
   task = gettask(rsv->pid);
   if (task != NULL){
     // restore priority
@@ -411,20 +447,25 @@ void kill_reserve(struct zs_reserve *rsv, int in_interrupt_context){
 	//printk("zsrmm.kill_reserve: setting rid(%d) TASK_INTERRUPTIBLE\n",rsv->rid);
 	p.sched_priority = rsv->effective_priority;
 	sched_setscheduler(task, SCHED_FIFO, &p);    
-	set_task_state(task, TASK_INTERRUPTIBLE);
+	// set task state not reliable -- HARD enforcement broken for now
+	//set_task_state(task, TASK_INTERRUPTIBLE);
       } else { // ZS_ENFORCEMENT_SOFT_MASK -- DEFAULT
 	rsv->effective_priority = 0;
 	p.sched_priority = 0;
 	sched_setscheduler(task, SCHED_NORMAL, &p);    
       }
-      set_tsk_need_resched(task);
-      stop_accounting(rsv,1,0,0);
+      zsrm_add_debug_event(timestamp_ns(),ZSRM_DEBUG_EVENT_ZS_DEFER,rsv->rid);
+      // debug -- perhaps we don't need this resched
+      //set_tsk_need_resched(task);
+      stop_accounting(rsv,UPDATE_HIGHEST_PRIORITY_TASK,0,0);
     } else {
       rsv->request_stop = REQUEST_STOP_DEFER; 
       push_to_reschedule(rsv->rid);
       wake_up_process(sched_task);
     }
-    set_tsk_need_resched(task);
+    //debug -- perhaps we don't need this resched
+    // set_tsk_need_resched(task);
+
     if (start_of_defer_ts_ns != 0){
       end_of_defer_ts_ns = timestamp_ns();
       end_of_defer_ts_ns -= start_of_defer_ts_ns;
@@ -443,14 +484,19 @@ void kill_reserve(struct zs_reserve *rsv, int in_interrupt_context){
 	start_of_defer_ts_ns = 0L;
       }
     }
-    // jumps directly to wait for next period
-    rsv->execution_status = EXEC_WAIT_NEXT_PERIOD | EXEC_DEFERRED;
+    // jumps directly to wait for next period 
+    // CHECK if we can change this to DROPPED WITHOUT LOCKS
+    rsv->execution_status = EXEC_WAIT_NEXT_PERIOD | EXEC_ENFORCED_DEFERRED;
     rsv->critical_utility_mode_enforced=0;
-    /* --- cancel all timers --- */
-    if (rsv->params.enforcement_mask & ZS_RESPONSE_TIME_ENFORCEMENT_MASK){
-      hrtimer_cancel(&(rsv->response_time_timer));
+    if (!in_interrupt_context){
+      // try limiting this to not from interrupt.
+      /* --- cancel all timers --- */
+      if (rsv->params.enforcement_mask & ZS_RESPONSE_TIME_ENFORCEMENT_MASK){
+	hrtimer_cancel(&(rsv->response_time_timer));
+      }
+      // this is already cancelled within the interrupt
+      hrtimer_cancel(&(rsv->zs_timer));
     }
-    hrtimer_cancel(&(rsv->zs_timer));
   } else {
     printk("zsrmm.kill_reserve: task not found\n");
   }
@@ -458,37 +504,49 @@ void kill_reserve(struct zs_reserve *rsv, int in_interrupt_context){
 
 void pause_reserve(struct zs_reserve *rsv){
   add_paused_reserve(rsv);
-  //if (rsv->execution_status == EXEC_RUNNING){
+  // pipelines : kernel-dis DIFF: if commented out in kernel-dis -- uncommenting
+  if (rsv->execution_status == EXEC_RUNNING){
     // stop the task
+    printk("zsrm.pause_reserve rid(%d) crit_util_mode_enforce=1\n",rsv->rid);
     rsv->critical_utility_mode_enforced = 1;
     rsv->just_returned_from_degradation=0;
     rsv->request_stop = REQUEST_STOP_PAUSE;
     push_to_reschedule(rsv->rid);
-    //} else {
-    //printk("zsrmm.pause_reserve: reserve(%d) != EXEC_RUNNING status(%X)\n",rsv->rid,rsv->execution_status);
-    ////start_of_enforcement_ts_ns = 0L;
-    //}
+  } else {
+    printk("zsrmm.pause_reserve: reserve(%d) != EXEC_RUNNING status(%X)\n",rsv->rid,rsv->execution_status);
+    start_of_enforcement_ts_ns = 0L;
+  }
   rsv->execution_status |= EXEC_ENFORCED_PAUSED;
 }
 
 void resume_reserve(struct zs_reserve *rsv){
   struct task_struct *task;
+  
   // double check that it was paused
   //if (rsv->execution_status & EXEC_ENFORCED_PAUSED){
     if (rsv->execution_status & EXEC_RUNNING){
       rsv->execution_status = EXEC_RUNNING;
       task = gettask(rsv->pid);
-      if (task == NULL && (task->state & TASK_INTERRUPTIBLE ||
-			   task->state & TASK_UNINTERRUPTIBLE)){
-	wake_up_process(task);
+      
+      if (task != NULL && (task->state & TASK_INTERRUPTIBLE ||
+      			   task->state & TASK_UNINTERRUPTIBLE)){
+      	wake_up_process(task);
+
       }
+      
       // reschedule again
       rsv->effective_priority = rsv->params.priority;
       push_to_reschedule(rsv->rid);
       rsv->current_degraded_mode = -1;
       rsv->just_returned_from_degradation=1;
+      // this is taken care of at the scheduler_task level
+      //rsv->critical_utility_mode_enforced = 0;
+      zsrm_add_debug_event(timestamp_ns(),ZSRM_DEBUG_EVENT_RESUME_NOW,rsv->rid);
+      printk("zsrm.resume_reserve: rid(%d) status = EXEC_RUNNING -- reactivating \n",rsv->rid);
     } else if (rsv->execution_status & EXEC_WAIT_NEXT_PERIOD){
       rsv->execution_status = EXEC_WAIT_NEXT_PERIOD;
+      zsrm_add_debug_event(timestamp_ns(),ZSRM_DEBUG_EVENT_RESUME_NEXT_PERIOD,rsv->rid);
+      printk("zsrm.resume_reserve: rid(%d) status = WAIT_NEXT_PERIOD -- not reactivating\n",rsv->rid);
     } else {
       printk("zsrmm.resume_reserve: rid(%d) not running or waiting status(%X)\n",rsv->rid, rsv->execution_status);
     }
@@ -497,12 +555,36 @@ void resume_reserve(struct zs_reserve *rsv){
     //}
 }
 
+/* void active_queue2str(int cpu, char *str){ */
+/*   struct zs_reserve *t; */
+
+/*   t=active_reserve_ptr[cpu]; */
+/*   sprintf(str,"["); */
+/*   while (t!= NULL){ */
+/*     sprintf(str,"%d,",t->rid); */
+/*     t = t->next_lower_priority; */
+/*   } */
+/*   sprintf(str,"]"); */
+/* } */
+
 void start_accounting(struct zs_reserve *rsv){
+
+  /*
+  char str_active_queue_bef[100];
+  char str_active_queue_aft[100];
+
+  str_active_queue_bef[0] = '\0';
+  str_active_queue_aft[0] = '\0';
+  */
+
+  //active_queue2str(rsv->params.bound_to_cpu,str_active_queue_bef);
   if (active_reserve_ptr[rsv->params.bound_to_cpu] == rsv){
     printk("zsrm.start_acct: active_rsv_id(%d) == rsv(%d) in cpu(%d)\n",active_reserve_ptr[rsv->params.bound_to_cpu]->rid,rsv->rid,rsv->params.bound_to_cpu);
     // only start accounting
     rsv->job_resumed_timestamp_nanos = timestamp_ns(); //ticks2nanos(rdtsc());
-    if (rsv->params.enforcement_mask & ZS_ENFORCE_OVERLOAD_BUDGET_MASK){
+    zsrm_add_debug_event(timestamp_ns(),ZSRM_DEBUG_EVENT_START_ACCT, rsv->rid);
+    if ((rsv->params.enforcement_mask & ZS_ENFORCE_OVERLOAD_BUDGET_MASK) &&
+	!(rsv->execution_status & EXEC_ENFORCED_DEFERRED)){
       exectime_enforcer_timer_start(rsv);
     }
   } else if (active_reserve_ptr[rsv->params.bound_to_cpu] == NULL){
@@ -510,7 +592,9 @@ void start_accounting(struct zs_reserve *rsv){
     active_reserve_ptr[rsv->params.bound_to_cpu] = rsv;
     rsv->next_lower_priority = NULL;
     rsv->job_resumed_timestamp_nanos = timestamp_ns(); //ticks2nanos(rdtsc());
-    if (rsv->params.enforcement_mask & ZS_ENFORCE_OVERLOAD_BUDGET_MASK){
+    zsrm_add_debug_event(timestamp_ns(),ZSRM_DEBUG_EVENT_START_ACCT, rsv->rid);
+    if ((rsv->params.enforcement_mask & ZS_ENFORCE_OVERLOAD_BUDGET_MASK) &&
+	!(rsv->execution_status & EXEC_ENFORCED_DEFERRED)){
       exectime_enforcer_timer_start(rsv);
     }
   } else if (active_reserve_ptr[rsv->params.bound_to_cpu]->effective_priority < rsv->effective_priority){
@@ -520,7 +604,9 @@ void start_accounting(struct zs_reserve *rsv){
     rsv->next_lower_priority = active_reserve_ptr[rsv->params.bound_to_cpu];
     active_reserve_ptr[rsv->params.bound_to_cpu] = rsv;
     rsv->job_resumed_timestamp_nanos = timestamp_ns();//ticks2nanos(rdtsc());
-    if (rsv->params.enforcement_mask & ZS_ENFORCE_OVERLOAD_BUDGET_MASK){    
+    zsrm_add_debug_event(timestamp_ns(),ZSRM_DEBUG_EVENT_START_ACCT, rsv->rid);
+    if ((rsv->params.enforcement_mask & ZS_ENFORCE_OVERLOAD_BUDGET_MASK) &&
+	!(rsv->execution_status & EXEC_ENFORCED_DEFERRED)){    
       exectime_enforcer_timer_start(rsv);
     }
   } else{
@@ -532,16 +618,28 @@ void start_accounting(struct zs_reserve *rsv){
     rsv->next_lower_priority = tmp->next_lower_priority;
     tmp->next_lower_priority = rsv;
   }
+  //active_queue2str(rsv->params.bound_to_cpu,str_active_queue_aft);
+  //printk("zsrm.start_accounting pre(%s), pos(%s)\n",str_active_queue_bef,str_active_queue_aft);
 }
 
 void stop_accounting(struct zs_reserve *rsv, int update_active_highest_priority,int in_enforcer_handler, int swap_task){
   unsigned long long job_stop_timestamp_nanos,old_job_executing_nanos;
+
+  zsrm_add_debug_event(timestamp_ns(),ZSRM_DEBUG_EVENT_STOP_ACCT, rsv->rid);
+  /*  char str_active_queue_bef[100];
+  char str_active_queue_aft[100];
+
+  str_active_queue_bef[0] = '\0';
+  str_active_queue_aft[0] = '\0';
+  */
+
+  //active_queue2str(rsv->params.bound_to_cpu,str_active_queue_bef);
+
   if (active_reserve_ptr[rsv->params.bound_to_cpu] == rsv){
     printk("zsrm.stop_acct: active_rsv(%d) == rsv(%d) @ cpu(%d)-- stopping\n",active_reserve_ptr[rsv->params.bound_to_cpu]->rid,rsv->rid,rsv->params.bound_to_cpu);
     job_stop_timestamp_nanos = timestamp_ns();//ticks2nanos(rdtsc());
     old_job_executing_nanos = rsv->job_executing_nanos;
-    rsv->job_executing_nanos += job_stop_timestamp_nanos - 
-      rsv->job_resumed_timestamp_nanos;
+    rsv->job_executing_nanos += (job_stop_timestamp_nanos - rsv->job_resumed_timestamp_nanos);
     printk("zsrm.stop_acct: old_exec_nanos (%llu) exec_nanos(%llu) job_stop(%llu) job_resume(%llu)\n",
 	   old_job_executing_nanos,rsv->job_executing_nanos, job_stop_timestamp_nanos, rsv->job_resumed_timestamp_nanos);
     if (!in_enforcer_handler){
@@ -554,9 +652,12 @@ void stop_accounting(struct zs_reserve *rsv, int update_active_highest_priority,
       if (active_reserve_ptr[rsv->params.bound_to_cpu] != NULL){
 	printk("zsrm.stop_acct: calling start_account()\n");
 	start_accounting(active_reserve_ptr[rsv->params.bound_to_cpu]);
-	if (swap_task){
-	  start_accounting(rsv);
-	}
+      } 
+      // when active == NULL it will restart the same task -- calling start_accounting reselects this
+      // or puts it in the right priority order if the priority was demoted.
+      // should be the last thing this function should do
+      if (swap_task){
+	start_accounting(rsv);
       }
     }
   } else {
@@ -571,9 +672,16 @@ void stop_accounting(struct zs_reserve *rsv, int update_active_highest_priority,
 	rsv->next_lower_priority = NULL;
       }
     } else {
-      printk("zsrm.stop_acct:  ERROR top == NULL expectig at least rsv(%d)\n",rsv->rid);
+      printk("zsrm.stop_acct:  ERROR top == NULL expecting at least rsv(%d)\n",rsv->rid);
     }
   }
+  if (active_reserve_ptr[rsv->params.bound_to_cpu] != NULL){
+    printk("zsrm.stop_acct: leaving with top rid(%d)\n",active_reserve_ptr[rsv->params.bound_to_cpu]->rid);
+  } else {
+    printk("zsrm.stop_acct: leaving with top rid(NULL)\n");
+  }
+  //active_queue2str(rsv->params.bound_to_cpu,str_active_queue_aft);
+  //printk("zsrm.stop_accounting pre(%s), pos(%s)\n",str_active_queue_bef,str_active_queue_aft);
 }
 
 int init_sys_mode_transitions(){
@@ -747,8 +855,32 @@ int pop_to_reschedule(void){
   } else
     ret = -1;
   spin_unlock_irqrestore(&reschedule_lock,flags);
-  return ret;}
+  return ret;
+}
 
+int rsv_to_stop[MAX_RESERVES];
+int tostopidx=-1;
+
+int push_to_stop(int i){
+  if ((tostopidx+1) < MAX_RESERVES){
+    tostopidx++;
+    rsv_to_stop[tostopidx]=i;
+  } else {
+    return -1;
+  }
+  return 0;
+}
+
+int pop_to_stop(void){
+  int ret;
+  if (tostopidx >=0){
+    ret = rsv_to_stop[tostopidx];
+    tostopidx--;
+  } else {
+    ret = -1;
+  }
+  return ret;
+}
 
 static void scheduler_task(void *a){
   int rid;
@@ -759,8 +891,8 @@ static void scheduler_task(void *a){
   
   while (!kthread_should_stop()) {
 
-      // prevent concurrent execution with interrupts
-      spin_lock_irqsave(&zsrmlock,flags);
+    // prevent concurrent execution with interrupts
+    spin_lock_irqsave(&zsrmlock,flags);
 
     while ((rid = pop_to_reschedule()) != -1) {
       task = gettask(reserve_table[rid].pid);
@@ -771,14 +903,24 @@ static void scheduler_task(void *a){
       if (reserve_table[rid].request_stop){
 	printk("zsrmm.sched_task: stopping rsv(%d)\n",rid);
 	if (reserve_table[rid].params.enforcement_mask & ZS_ENFORCEMENT_HARD_MASK){
-	  set_task_state(task, TASK_INTERRUPTIBLE);
+	  // setting task state is unreliable
+	  //set_task_state(task, TASK_INTERRUPTIBLE);
+	  //push_to_stop(rid);
 	  swap_task=0;
+	  zsrm_add_debug_event(timestamp_ns(),
+			       ZSRM_DEBUG_EVENT_JOB_INDIRECT_HARD_STOP,
+			       rid);
 	} else { // ZS_ENFORCEMENT_SOFT_MASK -- DEFAULT
 	  p.sched_priority = 0;
 	  sched_setscheduler(task, SCHED_NORMAL, &p);
 	  swap_task =1;
+	  zsrm_add_debug_event(timestamp_ns(),
+			       ZSRM_DEBUG_EVENT_JOB_INDIRECT_SOFT_STOP,
+			       rid);
 	}
-	set_tsk_need_resched(task);
+	// debug -- perhaps we don't need this resched
+	// set_tsk_need_resched(task);
+
 	reserve_table[rid].effective_priority = 0;
 	stop_accounting(&reserve_table[rid],
 			UPDATE_HIGHEST_PRIORITY_TASK,0,swap_task);
@@ -813,6 +955,7 @@ static void scheduler_task(void *a){
 	  reserve_table[rid].critical_utility_mode_enforced = 0;
 	  //wake_up_process(task);
 	}
+
 	p.sched_priority = reserve_table[rid].effective_priority;
 	sched_setscheduler(task, SCHED_FIFO, &p);
 	reserve_table[rid].execution_status = EXEC_RUNNING;
@@ -838,6 +981,14 @@ static void scheduler_task(void *a){
 	}
       }
     }
+
+    /* while ((rid = pop_to_stop()) != -1){ */
+    /*   task = gettask(reserve_table[rid].pid); */
+    /*   if (task != NULL){ */
+    /* 	set_task_state(task, TASK_INTERRUPTIBLE); */
+    /* 	schedule(); */
+    /*   } */
+    /* } */
 
     spin_unlock_irqrestore(&zsrmlock,flags);
     
@@ -901,7 +1052,7 @@ enum hrtimer_restart exectime_enforcer_handler(struct hrtimer *timer){
 }
 
 void exectime_enforcer_timer_stop(struct zs_reserve *rsv){
-  printk("zsrmm: canceling exectime_enforcer timer\n");
+  printk("zsrmm: rid(%d) canceling exectime_enforcer timer\n",rsv->rid);
   hrtimer_cancel(&exectime_enforcer_timers[rsv->params.bound_to_cpu]);
 }
 
@@ -916,7 +1067,9 @@ void exectime_enforcer_timer_start(struct zs_reserve *rsv){
     nsec = (unsigned long) (remaining_ns % 1000000000);
     printk("zsrmm: starting exectime_enforcer_timer remaining_ns(%llu), sec(%lu) nsec(%lu)\n",remaining_ns,sec,nsec);
     kperiod = ktime_set(sec,nsec);
-    hrtimer_init(&exectime_enforcer_timers[rsv->params.bound_to_cpu], CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+    // The initialization of the timers happens once at the loading of the module. I am assuming that I do not 
+    // need to reinitialize it again. We'll see.
+    //hrtimer_init(&exectime_enforcer_timers[rsv->params.bound_to_cpu], CLOCK_MONOTONIC, HRTIMER_MODE_REL);
     exectime_enforcer_timers[rsv->params.bound_to_cpu].function = exectime_enforcer_handler;
     hrtimer_start(&exectime_enforcer_timers[rsv->params.bound_to_cpu], kperiod, HRTIMER_MODE_REL);
   } else {
@@ -1034,6 +1187,7 @@ enum hrtimer_restart period_handler(struct hrtimer *timer){
 
 	arrival_ts_ns =  timestamp_ns();//ticks2nanos(rdtsc());
 
+	
 	if (prev_ns == 0){
 	  prev_ns = now_ns;
 	} else {
@@ -1048,6 +1202,8 @@ enum hrtimer_restart period_handler(struct hrtimer *timer){
 		spin_unlock_irqrestore(&zsrmlock,flags);
 		return HRTIMER_NORESTART;
 	}
+
+	zsrm_add_debug_event(arrival_ts_ns,ZSRM_DEBUG_EVENT_JOB_ARRIVAL,rid);
 
 	/* --- cancel all timers --- */
 	if (reserve_table[rid].params.enforcement_mask & ZS_RESPONSE_TIME_ENFORCEMENT_MASK){
@@ -1141,18 +1297,26 @@ enum hrtimer_restart period_handler(struct hrtimer *timer){
 	  //printk("waking up process: %d at %ld:%ld\n",reserve_table[rid].pid,now.tv_sec, now.tv_nsec);
 	  reserve_table[rid].effective_priority = (reserve_table[rid].current_degraded_mode == -1) ? reserve_table[rid].params.priority :
 	    reserve_table[rid].params.degraded_priority[reserve_table[rid].current_degraded_mode];
-	  // only wake it up if it was not enforced
+	  // if deferred to next arrival clear flag
+	  if ((reserve_table[rid].execution_status & EXEC_ENFORCED_DEFERRED)){
+	    reserve_table[rid].execution_status &= ~((unsigned int)EXEC_ENFORCED_DEFERRED);
+	  }
+	  // only wake it up if it was not enforced -- paused really
 	  if (reserve_table[rid].critical_utility_mode_enforced == 0 &&
-	      !(reserve_table[rid].execution_status & EXEC_ENFORCED_DROPPED) &&
+	      /* !(reserve_table[rid].execution_status & EXEC_ENFORCED_DROPPED) && */
 	      !(reserve_table[rid].execution_status & EXEC_ENFORCED_PAUSED) ){
 
 	    // moved the wakeup call here to ensure only waking up when not enforced
 	    reserve_table[rid].execution_status = EXEC_RUNNING;
+	    
 	    wake_up_process(task);
+
 	    //printk(KERN_INFO "Wakeup(task) rid(%d) 1\n",rid);
 	    push_to_reschedule(rid);
 	    wake_up_process(sched_task);
-	    set_tsk_need_resched(task);
+
+	    // debug -- perhaps we do not need this resched
+	    //set_tsk_need_resched(task);
 	    set_tsk_need_resched(current);
 	  } else {
 	    printk("zsrmm: COULD NOT SET EXEC_RUNNING OF rsv(%d)\n",rid);
@@ -1308,7 +1472,8 @@ int mode_transition(int mrid, int tid){
     //set_task_state(task,); // do we need this?
     printk(KERN_INFO "Wakeup(task) 2\n");
     
-    set_tsk_need_resched(task);
+    // perhaps we don't need this resched
+    //set_tsk_need_resched(task);
     
     // and install the reservation immediately with the target reservation
     rid = modal_reserve_table[mrid].reserve_for_mode[modal_reserve_table[mrid].transitions[tid].to_mode];
@@ -1425,13 +1590,18 @@ int attach_reserve_transitional(int rid, int pid, struct timespec *trans_zs_inst
   // init pipeline
   reserve_table[rid].e2e_job_executing_nanos=0;
   
-  p.sched_priority = reserve_table[rid].params.priority;
-  sched_setscheduler(task,SCHED_FIFO, &p);
-  
   // fix cpu affinity to its own
   cpus_clear(cpumask);
   cpu_set(reserve_table[rid].params.bound_to_cpu,cpumask);
+
+  /* Note: this call works in the kernel 3.5.0-51-generic
+   *       but I have seen that it creates a 'BUG: scheduling while atomic'
+   *       error with kernel: 3.10.39-rk
+   */
   set_cpus_allowed_ptr(task,&cpumask);
+
+  p.sched_priority = reserve_table[rid].params.priority;
+  sched_setscheduler(task,SCHED_FIFO, &p);  
   
   // if NOT APERIODIC  arrival then it is periodic. Start periodic timer
   if (!(reserve_table[rid].params.reserve_type & APERIODIC_ARRIVAL)){
@@ -1467,9 +1637,12 @@ int attach_reserve_transitional(int rid, int pid, struct timespec *trans_zs_inst
   if (reserve_table[rid].params.reserve_type & PIPELINE_STAGE_ROOT){
     reserve_table[rid].local_e2e_start_of_period_nanos = TIMESPEC2NS(&reserve_table[rid].start_of_period);
   }
+
+  zsrm_add_debug_event(timestamp_ns(),ZSRM_DEBUG_EVENT_JOB_ARRIVAL,rid);
   start_accounting(&reserve_table[rid]);
   
-  set_tsk_need_resched(task);
+  // debug -- perhaps we don't ned this resched
+  // set_tsk_need_resched(task);
   set_tsk_need_resched(current);
   return 0;
 }
@@ -1492,6 +1665,7 @@ void finish_period_degradation(int rid, int is_pipeline_stage){
   long tmp_marginal_utility=0;
   int i;
   
+  printk("zsrm.finish_period_degradation rid(%d)\n",rid);
   reserve_table[rid].in_critical_mode = 0;
 
   // find the max marginal utility of reserves
@@ -1706,7 +1880,9 @@ void period_degradation(int rid){
 	reserve_table[i].critical_utility_mode_enforced = 1;
 	reserve_table[i].just_returned_from_degradation=0;
 	
-	//printk(KERN_INFO "period degrad: stopping task with rid(%d)\n",i);
+	printk(KERN_INFO "period degrad rid(%d): stopping task with rid(%d) crit_util_mode_enforced =1\n",rid,i);
+
+	zsrm_add_debug_event(timestamp_ns(),ZSRM_DEBUG_EVENT_ZS_SUSPENSION,i);
 
 	pause_reserve(&reserve_table[i]);
 
@@ -1865,13 +2041,17 @@ int wait_for_next_leaf_stage_arrival(int rid, unsigned long *flags,
 
   // TODO: reprogram the e2e_zs_timer discounting the currently elapsed e2e response time
   
+  // we only call the start of job if the notify arrival has not done it for us before
   if (reserve_table[rid].execution_status & EXEC_WAIT_NEXT_PERIOD){
     zero_slack_adjustment = calculate_zero_slack_adjustment_ns(reserve_table[rid].local_e2e_start_of_period_nanos);
     if (start_of_job_processing(rid, zero_slack_adjustment)){
       printk("zsrmm: wait_next_leaf_arrival: START OF JOB FAILED zero_slack_adjustment(%lld)\n",zero_slack_adjustment);
     }
-  }
-
+  } 
+  /* else { */
+  /*   printk("zsrm.wait_next_leaf: ERROR not calling start_of_job() status(%d) != WAIT_NEXT_Period\n",reserve_table[rid].execution_status); */
+  /* } */
+  
   return len;
 }
 
@@ -2064,7 +2244,7 @@ void end_of_job_processing(int rid, int is_pipeline_stage){
 
   // reset the job_executing_nanos
   reserve_table[rid].job_executing_nanos=0L;
-  printk("zsrm.end_job: executing_nanos = 0\n");
+  printk("zsrm.end_job: rid(%d) executing_nanos = 0\n",rid);
 
   //reserve_table[rid].execution_status |= EXEC_WAIT_NEXT_PERIOD;
   reserve_table[rid].execution_status = EXEC_WAIT_NEXT_PERIOD;
@@ -2104,7 +2284,8 @@ int start_of_job_processing(int rid, long long zero_slack_adjustment_ns){
   record_latest_deadline(&(reserve_table[rid].params.period));
 
   if (reserve_table[rid].critical_utility_mode_enforced == 0&&
-      !(reserve_table[rid].execution_status & EXEC_ENFORCED_DROPPED) &&
+      /* !(reserve_table[rid].execution_status & EXEC_ENFORCED_DROPPED) && */
+      !(reserve_table[rid].execution_status & EXEC_ENFORCED_DEFERRED) &&    
       !(reserve_table[rid].execution_status & EXEC_ENFORCED_PAUSED)){
     
     reserve_table[rid].execution_status = EXEC_RUNNING;    
@@ -2112,6 +2293,7 @@ int start_of_job_processing(int rid, long long zero_slack_adjustment_ns){
 
     //p.sched_priority = reserve_table[rid].effective_priority; //0;
     //sched_setscheduler(current, SCHED_FIFO, &p);
+    // pipeline : kernel-dist DIFF -- start of commented section
     task = gettask(reserve_table[rid].pid);
     if (task != NULL){
       p.sched_priority = reserve_table[rid].effective_priority; 
@@ -2121,8 +2303,10 @@ int start_of_job_processing(int rid, long long zero_slack_adjustment_ns){
     } else {
       printk("zsrmm.start_of_job_processing: task == NULL");
     }
+    // pipeline : kernel-dist DIFF -- end of commented section
   } else {
-    printk("start of job processing rid name(%s): NOT SETTING PRIORITY mode enforced(%d), exec_status(0x%x)\n",
+    printk("start of job processing rid(%d) name(%s): NOT SETTING PRIORITY mode enforced(%d), exec_status(0x%x)\n",
+	   rid,
 	   reserve_table[rid].params.name,
 	   reserve_table[rid].critical_utility_mode_enforced,
 	   reserve_table[rid].execution_status);
@@ -2228,7 +2412,8 @@ int detach_reserve(int rid){
   if (task != NULL){
     p.sched_priority = 0;
     sched_setscheduler(task, SCHED_NORMAL,&p);
-    set_tsk_need_resched(task);
+    // debug -- perhaps we don't need this resched
+    // set_tsk_need_resched(task);
     if (task != current)
       set_tsk_need_resched(current);
   }
@@ -2338,15 +2523,23 @@ int notify_arrival(int __user *fds, int nfds){
       if (reserve_table[j].params.priority == -1)
 	continue;
       if (reserve_table[j].params.insockfd == kfds[i]){
-	if (reserve_table[j].execution_status & EXEC_DEFERRED){
-	  reserve_table[j].execution_status &= ~((unsigned int)EXEC_DEFERRED);
+	// This processing should only occur in the case that the task was deferred
+	// because then we need to "reschedule" it with its 'active' parameters
+	// Otherwise the task will wakeup by itself with its proper parameters.
+	if (reserve_table[j].execution_status & EXEC_ENFORCED_DEFERRED){
+	  reserve_table[j].execution_status &= ~((unsigned int)EXEC_ENFORCED_DEFERRED);
+      
+	/* if (reserve_table[j].execution_status & EXEC_ENFORCED_DROPPED){ */
+	/*   reserve_table[j].execution_status &= ~((unsigned int)EXEC_ENFORCED_DROPPED);*/
 	  task = gettask(reserve_table[j].pid);
 	  if (task != NULL){
 	    if ((task->state & TASK_INTERRUPTIBLE) || 
 		(task->state & TASK_UNINTERRUPTIBLE)){
 	      //printk("zsrmm.notify_arrival: waking up rsv(%d)\n",j);
 	      wake_up_process(task);
-	      set_tsk_need_resched(task);
+
+	      // debug -- perhaps we don't need this resched
+	      //set_tsk_need_resched(task);	      
 	    }
 	  }
 	  zero_slack_adjustment = 
@@ -2785,6 +2978,32 @@ static ssize_t zsrm_write
   case GET_PIPELINE_HEADER_SIGNATURE:
     res = MODULE_SIGNATURE;
     break;
+  case GET_NEXT_DEBUG_EVENT:
+    {
+      struct zsrm_debug_trace_record *rec;
+      rec = zsrm_next_debug_event();
+      if (rec != NULL){
+	call.args.next_debug_event_params.timestamp= rec->timestamp;
+	call.args.next_debug_event_params.event_type = rec->event_type;
+	call.args.next_debug_event_params.event_param = rec->event_param;
+	if (copy_to_user((void *)buf, (void *)&call, count)) {
+	  printk(KERN_WARNING "ZSRMM: failed to copy data to user.\n");
+	  res= -EFAULT;
+	}	
+	res = 1;
+      } else {
+	res = 0;
+      }
+    }
+    break;
+  case RESET_DEBUG_TRACE_WRITE_INDEX:
+    zsrm_debug_trace_write_index = 0;
+    res = 0;
+    break;
+  case RESET_DEBUG_TRACE_READ_INDEX:
+    zsrm_debug_trace_read_index = 0;
+    res = 0;
+    break;
   default: /* illegal api identifier. */
     res = -1;
     printk(KERN_WARNING "MZSRMM: illegal API identifier.\n");
@@ -2872,6 +3091,10 @@ static int __init zsrm_init(void)
   //struct timespec ts1;
   //struct timespec ts2;
   
+
+  // initialize debugging pointers
+  zsrm_debug_trace_read_index=0;
+  zsrm_debug_trace_write_index=0;
   
   modal_scheduling = 0 ;
   
@@ -2999,6 +3222,8 @@ static int __init zsrm_init(void)
 
   printk(KERN_WARNING "MZSRMM: nanos per ten ticks: %lu \n",nanosPerTenTicks);
   printk(KERN_WARNING "MZSRMM: ready!\n");
+
+  zsrm_add_debug_event(timestamp_ns(),ZSRM_DEBUG_EVENT_MODULE_STARTED,0);
     
   return 0;
 }
@@ -3076,7 +3301,7 @@ void test_accounting(void){
   while (time_before(jiffies, waituntil))
     ;
 
-  stop_accounting(&reserve_table[rsvid1],1,0,0);
+  stop_accounting(&reserve_table[rsvid1],UPDATE_HIGHEST_PRIORITY_TASK,0,0);
   printk("zsrm: t1 c: %lld\n",reserve_table[rsvid1].job_executing_nanos);
   reserve_table[rsvid1].job_executing_nanos = 0L;
 

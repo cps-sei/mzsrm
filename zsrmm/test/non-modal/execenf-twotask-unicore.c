@@ -45,14 +45,34 @@ DM-0000891
 #include <locale.h>
 #include <time.h>
 #include "../../zsrm.h"
+#include <pthread.h>
+#include <stdlib.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include <sys/syscall.h>
+#include <sys/sem.h>
+#include <sched.h>
+
 #include "busy.h"
+
+#ifdef SYS_gettid
+#define gettid() syscall(SYS_gettid)
+#else
+#error "SYS_gettid unavailable in this system"
+#endif
+
 
 #define MAX_TIMESTAMPS 1000000
 
 long bufidx1;
 unsigned long long timestamps_ns1[MAX_TIMESTAMPS];
+long bufidx2;
+unsigned long long timestamps_ns2[MAX_TIMESTAMPS];
+int sync_start_semid;
 
-int main(){
+unsigned long long start_ns;
+
+void *task1(void *argp){
   struct zsrm_debug_trace_record drec;
   int first_time=1;
   int rid,mid;
@@ -60,7 +80,6 @@ int main(){
   int i,j,k;
   struct zs_reserve_params cpuattr;
   struct timespec now;
-  unsigned long long start_ns;
   FILE *fid;
   long l;
 
@@ -70,7 +89,7 @@ int main(){
   cpuattr.period.tv_nsec=0;//100000000;
   cpuattr.criticality = 1;
   cpuattr.reserve_type = CRITICALITY_RESERVE;
-  cpuattr.priority = 10;
+  cpuattr.priority = 11;
   cpuattr.zs_instant.tv_sec=1;
   cpuattr.zs_instant.tv_nsec=0;
   cpuattr.execution_time.tv_sec = 0;
@@ -88,17 +107,22 @@ int main(){
   
   if ((sched = zs_open_sched()) == -1){
     printf("error opening the scheduler\n");
-    return -1;
+    return NULL;
   }
 
-  zs_reset_debug_trace_write_index(sched);
-  zs_reset_debug_trace_read_index(sched);
 
   rid = zs_create_reserve(sched,&cpuattr);
-  zs_attach_reserve(sched,rid,getpid());
 
-  printf("starting test...\n");
-  start_ns = now_ns();
+  struct sembuf sops;
+  sops.sem_num=0;
+  sops.sem_op = -1; // down
+  sops.sem_flg = 0;
+  if (semop(sync_start_semid,&sops,1)<0){
+    printf("error on sync star sem down\n");
+  }
+
+  zs_attach_reserve(sched,rid,gettid());
+
   for (i=0;i<10;i++){
     if (first_time){
       first_time=0;
@@ -113,17 +137,167 @@ int main(){
   zs_detach_reserve(sched,rid);
   zs_delete_reserve(sched,rid);
 
-  fid = fopen("ts-enforcement-test.txt","w+");
+  fid = fopen("ts-enf-task1.txt","w+");
   if (fid ==NULL){
     printf("error opening file\n");
-    return -1;
+    return NULL;
   }
 
   for (l=0;l<bufidx1;l++){
-    fprintf(fid,"%llu 1\n",timestamps_ns1[l]-start_ns);
+    fprintf(fid,"%llu %d\n",timestamps_ns1[l]-start_ns,rid);
   }
 
   fclose(fid);
+
+  zs_close_sched(sched);
+}
+
+void *task2(void *argp){
+  struct zsrm_debug_trace_record drec;
+  int first_time=1;
+  int rid,mid;
+  int sched;
+  int i,j,k;
+  struct zs_reserve_params cpuattr;
+  struct timespec now;
+  FILE *fid;
+  long l;
+
+  setlocale(LC_NUMERIC,"");
+
+  cpuattr.period.tv_sec = 2;//0;
+  cpuattr.period.tv_nsec=0;//100000000;
+  cpuattr.criticality = 2;
+  cpuattr.reserve_type = CRITICALITY_RESERVE;
+  cpuattr.priority = 10;
+  cpuattr.zs_instant.tv_sec=2;
+  cpuattr.zs_instant.tv_nsec=0;
+  cpuattr.execution_time.tv_sec = 0;
+  cpuattr.execution_time.tv_nsec = 200000000;
+  cpuattr.overload_execution_time.tv_sec = 0;
+  cpuattr.overload_execution_time.tv_nsec = 200000000;
+  cpuattr.response_time_instant.tv_sec = 1;
+  cpuattr.response_time_instant.tv_nsec =0;
+  cpuattr.critical_util_degraded_mode=-1;
+  cpuattr.normal_marginal_utility=7;
+  cpuattr.overloaded_marginal_utility=7;
+  cpuattr.num_degraded_modes=0;
+  cpuattr.bound_to_cpu=0;
+  cpuattr.enforcement_mask = ZS_ENFORCE_OVERLOAD_BUDGET_MASK | ZS_ENFORCEMENT_HARD_MASK;
+  
+  if ((sched = zs_open_sched()) == -1){
+    printf("error opening the scheduler\n");
+    return NULL;
+  }
+
+
+  rid = zs_create_reserve(sched,&cpuattr);
+
+  struct sembuf sops;
+  sops.sem_num=0;
+  sops.sem_op = -1; // down
+  sops.sem_flg = 0;
+  if (semop(sync_start_semid,&sops,1)<0){
+    printf("error on sync star sem down\n");
+  }
+
+  zs_attach_reserve(sched,rid,gettid());
+
+  for (i=0;i<6;i++){
+    if (first_time){
+      first_time=0;
+      busy_timestamped(190,timestamps_ns2,MAX_TIMESTAMPS,&bufidx2);
+    } else {
+      busy_timestamped(190,timestamps_ns2,MAX_TIMESTAMPS,&bufidx2);
+    }
+    zs_wait_next_period(sched,rid);
+  }
+
+  printf("Test finished...saving %ld task datapoins...\n",bufidx1);
+  zs_detach_reserve(sched,rid);
+  zs_delete_reserve(sched,rid);
+
+  fid = fopen("ts-enf-task2.txt","w+");
+  if (fid ==NULL){
+    printf("error opening file\n");
+    return NULL;
+  }
+
+  for (l=0;l<bufidx2;l++){
+    fprintf(fid,"%llu %d\n",timestamps_ns2[l]-start_ns,rid);
+  }
+
+  fclose(fid);
+
+  zs_close_sched(sched);
+}
+
+int main(){
+  int sched;
+  struct zsrm_debug_trace_record drec;
+  pthread_t tid1,tid2,tid3;
+  struct sched_param p;
+
+  union semun  {
+    int val;
+    struct semid_ds *buf;
+    ushort *array;
+  } arg;
+
+   p.sched_priority = 30;
+  if (sched_setscheduler(getpid(), SCHED_FIFO,&p)<0){
+    printf("error setting fixed priority\n");
+    return -1;
+  }
+
+ // create sync start semaphore
+  if ((sync_start_semid = semget(IPC_PRIVATE, 1, IPC_CREAT|0777)) <0){
+    perror("creating the semaphone\n");
+    return -1;
+  }
+
+  arg.val = 0;
+  if (semctl(sync_start_semid, 0, SETVAL, arg) < 0){
+    printf("Error setting sem to zero\n");
+    return -1;
+  }
+
+  if ((sched = zs_open_sched()) == -1){
+    printf("error opening the scheduler\n");
+    return -1;
+  }
+
+  if (pthread_create(&tid1,NULL, task1, NULL) != 0){
+    printf("Error creating thread 1\n");
+    return -1;
+  }
+
+  if (pthread_create(&tid2,NULL, task2, NULL) != 0){
+    printf("Error creating thread 2\n");
+    return -1;
+  }
+
+  zs_reset_debug_trace_write_index(sched);
+  zs_reset_debug_trace_read_index(sched);
+
+  sleep(3);
+
+  start_ns = now_ns();
+
+  // Go!
+  struct sembuf sops;
+  sops.sem_num=0;
+  sops.sem_op = 3; // three ups one for each task including idle task
+  sops.sem_flg = 0;
+  if (semop(sync_start_semid, &sops,1)<0){
+    printf("error in semop up\n");
+  }
+
+  pthread_join(tid1,NULL);
+  printf("task 1 finished\n");
+
+  pthread_join(tid2,NULL);
+  printf("task 2 finished\n");
 
   FILE* fid3 = fopen("ts-kernel.txt","w+");
   if (fid3 ==NULL){
@@ -143,5 +317,9 @@ int main(){
 
   fclose(fid3);
   zs_close_sched(sched);
+
+  if (semctl(sync_start_semid, 0, IPC_RMID)<0){
+    printf("error removing semaphore\n");
+  }
 
 }

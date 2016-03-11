@@ -80,10 +80,18 @@ static inline unsigned long long rdtsc(){
 
 unsigned long long now_ns(){
   struct timespec n;
-  clock_gettime(CLOCK_MONOTONIC,&n);
+  //clock_gettime(CLOCK_MONOTONIC,&n);
 
+  // to make it comparable to getnstimeofday() from kernel
+  clock_gettime(CLOCK_REALTIME,&n);
+
+  // to return milliseconds
   unsigned long long retnow = (((unsigned long long) n.tv_sec) *1000L) + (unsigned long long) (n.tv_nsec/1000000);
-return retnow;
+
+  // to return nanoseconds
+  // unsigned long long retnow = (((unsigned long long) n.tv_sec) *1000000000L) + (unsigned long long) (n.tv_nsec);
+
+  return retnow;
 }
 
 

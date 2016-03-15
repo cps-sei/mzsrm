@@ -42,11 +42,11 @@ int main(int argc, char * argv[]){
   int sync_start_semid;
   cpu_set_t cpuset;
 
-  CPU_ZERO(&cpuset);
-  CPU_SET(0,&cpuset);
-  if (sched_setaffinity(getpid(), sizeof(cpu_set_t), &cpuset) != 0){
-    printf("Error setting CPU affinity of task 2\n");
-  }
+  /* CPU_ZERO(&cpuset); */
+  /* CPU_SET(0,&cpuset); */
+  /* if (sched_setaffinity(getpid(), sizeof(cpu_set_t), &cpuset) != 0){ */
+  /*   printf("Error setting CPU affinity of task 2\n"); */
+  /* } */
 
 
   if (argc != 2){
@@ -84,11 +84,11 @@ int main(int argc, char * argv[]){
 
 
   // create reserve
-  cpuattr.period.tv_sec = 5;
+  cpuattr.period.tv_sec = 2;
   cpuattr.period.tv_nsec=0;
   cpuattr.criticality = 0;
-  cpuattr.priority = 10;
-  cpuattr.zs_instant.tv_sec=5;
+  cpuattr.priority = 11;
+  cpuattr.zs_instant.tv_sec=2;
   cpuattr.zs_instant.tv_nsec=0;
   cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
@@ -103,6 +103,7 @@ int main(int argc, char * argv[]){
   cpuattr.e2e_overload_execution_time.tv_sec = 4;
   cpuattr.e2e_overload_execution_time.tv_nsec = 0;
   cpuattr.insockfd = fd;
+  cpuattr.bound_to_cpu=2;
   
 
   printf("Reserve type: %x\n",cpuattr.reserve_type);
@@ -144,7 +145,7 @@ int main(int argc, char * argv[]){
       printf("Error(%d) in wait_next_arrival\n",err);
       break;
     }
-    printf("received[%s] from addr(%s)\n",buf,inet_ntoa(remaddr.sin_addr));
+    printf("last: received[%s] from addr(%s)\n",buf,inet_ntoa(remaddr.sin_addr));
   }
 
   zs_free_msg_packet(sched, buf);  
@@ -152,6 +153,7 @@ int main(int argc, char * argv[]){
   zs_delete_reserve(sched,rid);
   zs_close_sched(sched);
 
+  printf("last done\n");
   close(fd);
 
 }

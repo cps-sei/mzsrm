@@ -98,7 +98,9 @@ unsigned long long now_ns(){
 // at frequency: 1500000  old:247500
 //#define IN_LOOP_ONE_MS 213788
 // at frequency 3.5 GHz
-#define IN_LOOP_ONE_MS 487130
+//#define IN_LOOP_ONE_MS 487130
+// LAPTOP DELL M4800 @3.8 GHz
+#define IN_LOOP_ONE_MS 541590
 #define NUM_IN_LOOPS_ONE_MS 1
 
 void  busy(long millis){

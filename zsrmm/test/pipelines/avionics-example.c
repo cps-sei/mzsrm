@@ -315,16 +315,18 @@ int main(int argc, char *argv[]){
   // let the threads prepare
   sleep(5);
 
-  printf("about to start node\n");
-  nodetid = zs_start_node(sched,fds,12);
+  //printf("about to start node\n");
+  //nodetid = zs_start_node(sched,fds,12);
   
-  if (nodetid <0 ){
-    printf("error starting node server\n");
-    return -1;
-  }
+  //if (nodetid <0 ){
+  //  printf("error starting node server\n");
+  //  return -1;
+  //}
 
   zs_reset_debug_trace_write_index(sched);
   zs_reset_debug_trace_read_index(sched);
+
+  printf("GO!\n");
 
   start_timestamp_ns = now_ns();//ticks2nanos(rdtsc());
 
@@ -564,8 +566,8 @@ int main(int argc, char *argv[]){
     printf("error removing semaphore\n");
   }
 
-  printf("shutting down arrival server\n");
-  zs_stop_node(nodetid);
+  //printf("shutting down arrival server\n");
+  //zs_stop_node(nodetid);
 
   zs_close_sched(sched);
  

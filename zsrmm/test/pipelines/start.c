@@ -4,10 +4,18 @@
 #include <sys/sem.h>
 #include <sys/ipc.h>
 
-int main(){
+int main(int argc, char *argv[]){
   key_t semkey;
   int sync_start_semid;
   struct sembuf sops;
+  int numprocs;
+
+  if (argc != 2){
+    printf("usage: %s <num processes>\n",argv[0]);
+    return -1;
+  }
+
+  numprocs = atoi(argv[1]);
 
   if ((semkey = ftok("/tmp", 11766)) == (key_t) -1) {
     perror("IPC error: ftok"); 
@@ -23,10 +31,14 @@ int main(){
   // up semaphore to sync start tasks
 
   sops.sem_num=0;
-  sops.sem_op = 3; // three ups one for each task
+  sops.sem_op = numprocs; // # ups one for each task
   sops.sem_flg = 0;
   if (semop(sync_start_semid, &sops,1)<0){
     printf("error in semop up\n");
+  }
+
+  if (semctl(sync_start_semid, 0, IPC_RMID)<0){
+    printf("error removing semaphore\n");
   }
 
 }

@@ -61,7 +61,7 @@ void *air_radar_task(void *argp){
   cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
   cpuattr.reserve_type = CRITICALITY_RESERVE | PIPELINE_STAGE_ROOT;
-  cpuattr.enforcement_mask = 0;//DONT_ENFORCE_ZERO_SLACK;
+  cpuattr.enforcement_mask = DONT_ENFORCE_ZERO_SLACK_MASK;//0;//DONT_ENFORCE_ZERO_SLACK;
   cpuattr.e2e_execution_time.tv_sec = 2;
   cpuattr.e2e_execution_time.tv_nsec = 100000000;
   cpuattr.e2e_overload_execution_time.tv_sec = 2;
@@ -72,6 +72,7 @@ void *air_radar_task(void *argp){
   cpuattr.critical_util_degraded_mode = -1;
   cpuattr.num_degraded_modes=0;
   cpuattr.bound_to_cpu = 0;
+  cpuattr.outsockfd = fd;
 
   if ((sched = zs_open_sched()) == -1){
     printf("error opening the scheduler\n");
@@ -85,6 +86,11 @@ void *air_radar_task(void *argp){
   }
 
   rid = zs_create_reserve(sched,&cpuattr);
+
+  if (rid <0){
+    printf("failed to create reserve\n");
+    return NULL;
+  }
 
   p.sched_priority = 30;
   if (pthread_setschedparam(pthread_self(), SCHED_FIFO,&p)<0){
@@ -204,7 +210,7 @@ void *object_identification_task(void *argp){
   cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
   cpuattr.reserve_type = CRITICALITY_RESERVE | PIPELINE_STAGE_MIDDLE | APERIODIC_ARRIVAL;
-  cpuattr.enforcement_mask = 0;//DONT_ENFORCE_ZERO_SLACK;
+  cpuattr.enforcement_mask = DONT_ENFORCE_ZERO_SLACK_MASK;//0;//DONT_ENFORCE_ZERO_SLACK;
   cpuattr.e2e_execution_time.tv_sec = 2;
   cpuattr.e2e_execution_time.tv_nsec =  100000000;
   cpuattr.e2e_overload_execution_time.tv_sec = 2;
@@ -215,7 +221,8 @@ void *object_identification_task(void *argp){
   cpuattr.critical_util_degraded_mode = -1;
   cpuattr.num_degraded_modes=0;
   cpuattr.bound_to_cpu = 1;
-  cpuattr.insockfd = fd;
+  //cpuattr.insockfd = fd;
+  cpuattr.outsockfd =fd;
 
   fds[stage_paramsp->fd_index] = fd;
 
@@ -232,6 +239,11 @@ void *object_identification_task(void *argp){
 
 
   rid = zs_create_reserve(sched,&cpuattr);
+
+  if (rid <0){
+    printf("failed to create reserve\n");
+    return NULL;
+  }
 
   struct sembuf sops;
   sops.sem_num=0;
@@ -361,7 +373,7 @@ void *track_building_task(void *argp){
   cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
   cpuattr.reserve_type = CRITICALITY_RESERVE | PIPELINE_STAGE_MIDDLE | APERIODIC_ARRIVAL;
-  cpuattr.enforcement_mask = 0;//DONT_ENFORCE_ZERO_SLACK;
+  cpuattr.enforcement_mask = DONT_ENFORCE_ZERO_SLACK_MASK;//0;//DONT_ENFORCE_ZERO_SLACK;
   cpuattr.e2e_execution_time.tv_sec = 2;
   cpuattr.e2e_execution_time.tv_nsec = 100000000;
   cpuattr.e2e_overload_execution_time.tv_sec = 2;
@@ -372,7 +384,8 @@ void *track_building_task(void *argp){
   cpuattr.critical_util_degraded_mode = -1;
   cpuattr.num_degraded_modes=0;
   cpuattr.bound_to_cpu = 2;
-  cpuattr.insockfd = fd;
+  //cpuattr.insockfd = fd;
+  cpuattr.outsockfd =fd;
 
   fds[stage_paramsp->fd_index] = fd;
 
@@ -388,6 +401,11 @@ void *track_building_task(void *argp){
   }
 
   rid = zs_create_reserve(sched,&cpuattr);
+
+  if (rid <0){
+    printf("failed to create reserve\n");
+    return NULL;
+  }
 
   struct sembuf sops;
   sops.sem_num=0;
@@ -520,7 +538,7 @@ void *traffic_warning_task(void *argp){
   cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
   cpuattr.reserve_type = CRITICALITY_RESERVE | PIPELINE_STAGE_LEAF | APERIODIC_ARRIVAL;
-  cpuattr.enforcement_mask = 0;//DONT_ENFORCE_ZERO_SLACK;
+  cpuattr.enforcement_mask = DONT_ENFORCE_ZERO_SLACK_MASK;//0;//DONT_ENFORCE_ZERO_SLACK;
   cpuattr.e2e_execution_time.tv_sec = 2;
   cpuattr.e2e_execution_time.tv_nsec = 100000000;
   cpuattr.e2e_overload_execution_time.tv_sec = 2;
@@ -548,6 +566,11 @@ void *traffic_warning_task(void *argp){
 
 
   rid = zs_create_reserve(sched,&cpuattr);
+
+  if (rid <0){
+    printf("failed to create reserve\n");
+    return NULL;
+  }
 
   struct sembuf sops;
   sops.sem_num=0;

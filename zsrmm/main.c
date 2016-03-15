@@ -73,9 +73,14 @@ DM-0000891
 #include "zsrm.h"
 
 
+//int (*do_sys_pollp)(struct pollfd __user *ufds, unsigned int nfds, struct timespec *end_time);
+//int (*sys_recvfromp)(int fd, void __user *ubuf, size_t size, unsigned int flags, struct sockaddr __user *addr, int __user *addr_len);
+//int (*sys_sendtop)(int fd, void __user *ubuf, size_t len, unsigned int flags, struct sockaddr __user *addr, int addr_len);
+
+// for kernel 3.19 -- test -- I need to make it generic
 int (*do_sys_pollp)(struct pollfd __user *ufds, unsigned int nfds, struct timespec *end_time);
-int (*sys_recvfromp)(int fd, void __user *ubuf, size_t size, unsigned int flags, struct sockaddr __user *addr, int __user *addr_len);
-int (*sys_sendtop)(int fd, void __user *ubuf, size_t len, unsigned int flags, struct sockaddr __user *addr, int addr_len);
+long (*sys_recvfromp)(int fd, void __user *ubuf, size_t size, unsigned flags, struct sockaddr __user *addr, int __user *addr_len);
+long (*sys_sendtop)(int fd, void __user *ubuf, size_t len, unsigned flags, struct sockaddr __user *addr, int addr_len);
 
 MODULE_AUTHOR("Dionisio de Niz");
 MODULE_LICENSE("GPL");
@@ -618,6 +623,9 @@ void start_accounting(struct zs_reserve *rsv){
     rsv->next_lower_priority = tmp->next_lower_priority;
     tmp->next_lower_priority = rsv;
   }
+  printk("zsrm.start_acct: left rid(%d) on top of cpu(%d)\n",
+	 active_reserve_ptr[rsv->params.bound_to_cpu]->rid,
+	 rsv->params.bound_to_cpu);
   //active_queue2str(rsv->params.bound_to_cpu,str_active_queue_aft);
   //printk("zsrm.start_accounting pre(%s), pos(%s)\n",str_active_queue_bef,str_active_queue_aft);
 }
@@ -1685,10 +1693,10 @@ void finish_period_degradation(int rid, int is_pipeline_stage){
   system_utility = max_marginal_utility;
   
   // check if the reserve overloaded
-  if ( (is_pipeline_stage &
+  if ( (is_pipeline_stage &&
   	(reserve_table[rid].e2e_job_executing_nanos >
   	 reserve_table[rid].e2e_nominal_exectime_nanos)) ||
-       (!is_pipeline_stage &
+       (!is_pipeline_stage &&
   	(reserve_table[rid].job_executing_nanos >
   	 reserve_table[rid].nominal_exectime_nanos))
        ){
@@ -2005,9 +2013,12 @@ int wait_for_next_leaf_stage_arrival(int rid, unsigned long *flags,
   /* printk("zsrmm: wait next leaf. rid(%d) exectime (%llu) before kernel_recvmsg\n",rid, */
   /* 	 reserve_table[rid].job_executing_nanos); */
 
+  printk("zsrm. wait_next_leaf about to call sys_recvfrom rid(%d)\n",rid);
   len = sys_recvfromp(fd,ubuf-sizeof(struct pipeline_header), 
 		      size+sizeof(struct pipeline_header), 
 		      sockflags, addr, addr_len);
+
+  printk("zsrm. wait_next_leaf returned from sys_recvfrom rid(%d)\n",rid);
 
   receiving_timestamp_nanos = timestamp_ns(); //ticks2nanos(rdtsc());
 
@@ -2105,9 +2116,11 @@ int wait_for_next_stage_arrival(int rid, unsigned long *flags,
 
     if (!(io_mask & MIDDLE_STAGE_DONT_SEND_OUTPUT)){
 
+      printk("zsrm.wait_next_stage_arrival about to call sys_sendto rid(%d)\n",rid);
       len = sys_sendtop(fd, buf-sizeof(struct pipeline_header), 
 			size+sizeof(struct pipeline_header), 
 			sockflags, outaddr, outaddrlen);
+      printk("zsrm.wait_next_stage_arrival returned from sys_sendto rid(%d)\n",rid);
     }
     if (len<0){
       printk("zsrmm: error. sys_sendto returned %d\n",len);
@@ -2122,9 +2135,11 @@ int wait_for_next_stage_arrival(int rid, unsigned long *flags,
       len=0;
      
       if (!(io_mask & MIDDLE_STAGE_DONT_WAIT_INPUT)){
+	printk("zsrm.wait_next_stage_arrival about to call sys_recvfrom rid(%d)\n",rid);
 	len = sys_recvfromp(fd,buf-sizeof(struct pipeline_header), 
 			    size+sizeof(struct pipeline_header), 
 			    sockflags, inaddr, inaddrlen);
+	printk("zsrm.wait_next_stage_arrival returned from sys_recvfrom rid(%d)\n",rid);
       }
       
       receiving_timestamp_nanos = timestamp_ns();//ticks2nanos(rdtsc());
@@ -2194,6 +2209,7 @@ int wait_for_next_root_period(int rid, int fd, void __user *buf, size_t buflen, 
     /* printk("zsrmm: wait_next_root_period: e2e_job_executing_nanos(%llu)\n",reserve_table[rid].e2e_job_executing_nanos); */
     /* printk("zsrmm: wait_next_root_period: e2e_local_start_period(%llu)\n",reserve_table[rid].local_e2e_start_of_period_nanos); */
     
+    printk("zsrm.wait_next_root_period: about to call sys_sendto rid(%d)\n\n",rid);
     len = sys_sendtop(fd, buf-sizeof(struct pipeline_header), 
 		      buflen+sizeof(struct pipeline_header), 
 		      flags, addr, addrlen);    
@@ -2204,6 +2220,7 @@ int wait_for_next_root_period(int rid, int fd, void __user *buf, size_t buflen, 
       }
     }
     
+    printk("zsrm.wait_next_root_period: returned from sys_sendto rid(%d) -- going to sleep \n",rid);
     set_current_state(TASK_UNINTERRUPTIBLE);
   }
   
@@ -2283,7 +2300,7 @@ int start_of_job_processing(int rid, long long zero_slack_adjustment_ns){
   now2timespec(&reserve_table[rid].start_of_period);
   record_latest_deadline(&(reserve_table[rid].params.period));
 
-  if (reserve_table[rid].critical_utility_mode_enforced == 0&&
+  if ((reserve_table[rid].critical_utility_mode_enforced == 0) &&
       /* !(reserve_table[rid].execution_status & EXEC_ENFORCED_DROPPED) && */
       !(reserve_table[rid].execution_status & EXEC_ENFORCED_DEFERRED) &&    
       !(reserve_table[rid].execution_status & EXEC_ENFORCED_PAUSED)){
@@ -2518,6 +2535,7 @@ int notify_arrival(int __user *fds, int nfds){
     return -EFAULT;
   }
 
+  printk("zsrm.notify_arrival: checking waking socks\n");
   for (i=0;i<nfds;i++){
     for (j=0;j<MAX_RESERVES;j++){
       if (reserve_table[j].params.priority == -1)
@@ -2535,7 +2553,7 @@ int notify_arrival(int __user *fds, int nfds){
 	  if (task != NULL){
 	    if ((task->state & TASK_INTERRUPTIBLE) || 
 		(task->state & TASK_UNINTERRUPTIBLE)){
-	      //printk("zsrmm.notify_arrival: waking up rsv(%d)\n",j);
+	      printk("zsrmm.notify_arrival: waking up rsv(%d)\n",j);
 	      wake_up_process(task);
 
 	      // debug -- perhaps we don't need this resched
@@ -2574,6 +2592,7 @@ int notify_arrival(int __user *fds, int nfds){
       }
     }
   }
+  printk("zsrm.notify_arrival: end\n");
   return 0;
 }
 
@@ -3111,7 +3130,7 @@ static int __init zsrm_init(void)
   // get do_sys_poll pointer
 
   do_sys_pollp = (int (*)(struct pollfd __user *ufds, unsigned int nfds,
-			  struct timespec *end_time))
+			   struct timespec *end_time))
     kallsyms_lookup_name("do_sys_poll");
 
   if (((unsigned long)do_sys_pollp) == 0){
@@ -3119,7 +3138,7 @@ static int __init zsrm_init(void)
     return -1;
   }
 
-  sys_recvfromp = (int(*)(int fd, void __user *ubuf, size_t size, unsigned int flags, struct sockaddr __user *addr, int __user *addr_len))
+  sys_recvfromp = (long(*)(int fd, void __user *ubuf, size_t size, unsigned flags, struct sockaddr __user *addr, int __user *addr_len))
     kallsyms_lookup_name("sys_recvfrom");
 
   if ( ( (unsigned long)sys_recvfromp) == 0) {
@@ -3127,7 +3146,7 @@ static int __init zsrm_init(void)
     return -1;
   }
 
-  sys_sendtop = (int (*)(int fd, void __user *ubuf, size_t size, unsigned int flags, struct sockaddr __user *addr, int addr_len)) 
+  sys_sendtop = (long (*)(int fd, void __user *ubuf, size_t size, unsigned flags, struct sockaddr __user *addr, int addr_len)) 
     kallsyms_lookup_name("sys_sendto");
 
   if (((unsigned long)sys_sendtop) == 0){

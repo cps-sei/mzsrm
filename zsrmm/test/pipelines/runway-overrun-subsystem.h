@@ -62,7 +62,7 @@ void *gps_position_task(void *argp){
   cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
   cpuattr.reserve_type = CRITICALITY_RESERVE | PIPELINE_STAGE_ROOT;
-  cpuattr.enforcement_mask = 0;//ZS_ENFORCEMENT_HARD_MASK;//DONT_ENFORCE_ZERO_SLACK;
+  cpuattr.enforcement_mask = DONT_ENFORCE_ZERO_SLACK_MASK;//0;//ZS_ENFORCEMENT_HARD_MASK;//DONT_ENFORCE_ZERO_SLACK;
   cpuattr.e2e_execution_time.tv_sec = 0;
   cpuattr.e2e_execution_time.tv_nsec = 952000000;
   cpuattr.e2e_overload_execution_time.tv_sec = 1;
@@ -73,6 +73,7 @@ void *gps_position_task(void *argp){
   cpuattr.critical_util_degraded_mode = -1;
   cpuattr.num_degraded_modes=0;
   cpuattr.bound_to_cpu=0;
+  cpuattr.outsockfd = fd;
 
   if ((sched = zs_open_sched()) == -1){
     printf("error opening the scheduler\n");
@@ -86,6 +87,11 @@ void *gps_position_task(void *argp){
   }
 
   rid = zs_create_reserve(sched,&cpuattr);
+
+  if (rid <0){
+    printf("failed to create reserve\n");
+    return NULL;
+  }
 
   p.sched_priority = 30;
   if (pthread_setschedparam(pthread_self(), SCHED_FIFO,&p)<0){
@@ -205,7 +211,7 @@ void *stop_distance_task(void *argp){
   cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
   cpuattr.reserve_type = CRITICALITY_RESERVE | PIPELINE_STAGE_MIDDLE | APERIODIC_ARRIVAL;
-  cpuattr.enforcement_mask = ZS_ENFORCEMENT_HARD_MASK;//DONT_ENFORCE_ZERO_SLACK;
+  cpuattr.enforcement_mask = DONT_ENFORCE_ZERO_SLACK_MASK;//ZS_ENFORCEMENT_HARD_MASK;//DONT_ENFORCE_ZERO_SLACK;
   cpuattr.e2e_execution_time.tv_sec = 0;
   cpuattr.e2e_execution_time.tv_nsec = 952000000;
   cpuattr.e2e_overload_execution_time.tv_sec = 1;
@@ -216,7 +222,8 @@ void *stop_distance_task(void *argp){
   cpuattr.critical_util_degraded_mode = -1;
   cpuattr.num_degraded_modes=0;
   cpuattr.bound_to_cpu=1;
-  cpuattr.insockfd = fd;
+  //cpuattr.insockfd = fd;
+  cpuattr.outsockfd = fd;
 
   fds[stage_paramsp->fd_index] = fd;
 
@@ -233,6 +240,12 @@ void *stop_distance_task(void *argp){
 
 
   rid = zs_create_reserve(sched,&cpuattr);
+
+  if (rid <0){
+    printf("failed to create reserve\n");
+    return NULL;
+  }
+
 
   struct sembuf sops;
   sops.sem_num=0;
@@ -362,7 +375,7 @@ void *stop_location_task(void *argp){
   cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
   cpuattr.reserve_type = CRITICALITY_RESERVE | PIPELINE_STAGE_MIDDLE | APERIODIC_ARRIVAL;
-  cpuattr.enforcement_mask = ZS_ENFORCEMENT_HARD_MASK;//DONT_ENFORCE_ZERO_SLACK;
+  cpuattr.enforcement_mask = DONT_ENFORCE_ZERO_SLACK_MASK;//ZS_ENFORCEMENT_HARD_MASK;//DONT_ENFORCE_ZERO_SLACK;
   cpuattr.e2e_execution_time.tv_sec = 0;
   cpuattr.e2e_execution_time.tv_nsec = 952000000;
   cpuattr.e2e_overload_execution_time.tv_sec = 1;
@@ -373,7 +386,8 @@ void *stop_location_task(void *argp){
   cpuattr.critical_util_degraded_mode = -1;
   cpuattr.num_degraded_modes=0;
   cpuattr.bound_to_cpu= 2;
-  cpuattr.insockfd = fd;
+  //cpuattr.insockfd = fd;
+  cpuattr.outsockfd = fd;
 
   fds[stage_paramsp->fd_index] = fd;
 
@@ -389,6 +403,11 @@ void *stop_location_task(void *argp){
   }
 
   rid = zs_create_reserve(sched,&cpuattr);
+
+  if (rid <0){
+    printf("failed to create reserve\n");
+    return NULL;
+  }
 
   struct sembuf sops;
   sops.sem_num=0;
@@ -521,7 +540,7 @@ void *virtual_runway_task(void *argp){
   cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
   cpuattr.reserve_type = CRITICALITY_RESERVE | PIPELINE_STAGE_LEAF | APERIODIC_ARRIVAL;
-  cpuattr.enforcement_mask = ZS_ENFORCEMENT_HARD_MASK;//DONT_ENFORCE_ZERO_SLACK;
+  cpuattr.enforcement_mask = DONT_ENFORCE_ZERO_SLACK_MASK;//ZS_ENFORCEMENT_HARD_MASK;//DONT_ENFORCE_ZERO_SLACK;
   cpuattr.e2e_execution_time.tv_sec = 0;
   cpuattr.e2e_execution_time.tv_nsec = 952000000;
   cpuattr.e2e_overload_execution_time.tv_sec = 1;
@@ -549,6 +568,11 @@ void *virtual_runway_task(void *argp){
 
 
   rid = zs_create_reserve(sched,&cpuattr);
+
+  if (rid <0){
+    printf("failed to create reserve\n");
+    return NULL;
+  }
 
   struct sembuf sops;
   sops.sem_num=0;

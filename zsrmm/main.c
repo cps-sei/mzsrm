@@ -1211,6 +1211,8 @@ enum hrtimer_restart period_handler(struct hrtimer *timer){
 		return HRTIMER_NORESTART;
 	}
 
+	printk("zsrm.period_handler rid%d)\n",rid);
+
 	zsrm_add_debug_event(arrival_ts_ns,ZSRM_DEBUG_EVENT_JOB_ARRIVAL,rid);
 
 	/* --- cancel all timers --- */
@@ -1318,8 +1320,9 @@ enum hrtimer_restart period_handler(struct hrtimer *timer){
 	    reserve_table[rid].execution_status = EXEC_RUNNING;
 	    
 	    wake_up_process(task);
+	    //wake_up_interruptible(&reserve_table[rid].arrival_waitq);
 
-	    //printk(KERN_INFO "Wakeup(task) rid(%d) 1\n",rid);
+	    printk(KERN_INFO "zsrm.period_handler:wakeup(task) rid(%d) \n",rid);
 	    push_to_reschedule(rid);
 	    wake_up_process(sched_task);
 
@@ -1330,6 +1333,8 @@ enum hrtimer_restart period_handler(struct hrtimer *timer){
 	    printk("zsrmm: COULD NOT SET EXEC_RUNNING OF rsv(%d)\n",rid);
 	  }
 	  //set_tsk_need_resched(sched_task);
+	} else {
+	  printk("zsrm.period_handler: mode DISABLED rid(%d)\n",rid);
 	}
 
 	// no modal_scheduling => !mode_change
@@ -2125,7 +2130,7 @@ int wait_for_next_stage_arrival(int rid, unsigned long *flags,
     if (len<0){
       printk("zsrmm: error. sys_sendto returned %d\n",len);
 
-      // reacquire zsrm locks
+      // reacquire zsrm locks 
       down(&zsrmsem);
       spin_lock_irqsave(&zsrmlock, *flags);
     } else {
@@ -2184,7 +2189,7 @@ int wait_for_next_stage_arrival(int rid, unsigned long *flags,
   return len;
 }
 
-int wait_for_next_root_period(int rid, int fd, void __user *buf, size_t buflen, unsigned int flags, struct sockaddr __user *addr, int addrlen){
+int wait_for_next_root_period(int rid, unsigned long *irqflags, int fd, void __user *buf, size_t buflen, unsigned int flags, struct sockaddr __user *addr, int addrlen){
   int len=0;
   struct pipeline_header_with_signature pipeline_hdrs; 
 
@@ -2209,10 +2214,16 @@ int wait_for_next_root_period(int rid, int fd, void __user *buf, size_t buflen, 
     /* printk("zsrmm: wait_next_root_period: e2e_job_executing_nanos(%llu)\n",reserve_table[rid].e2e_job_executing_nanos); */
     /* printk("zsrmm: wait_next_root_period: e2e_local_start_period(%llu)\n",reserve_table[rid].local_e2e_start_of_period_nanos); */
     
+     // release zsrm locks
+    spin_unlock_irqrestore(&zsrmlock, *irqflags);
+    up(&zsrmsem);
+
     printk("zsrm.wait_next_root_period: about to call sys_sendto rid(%d)\n\n",rid);
     len = sys_sendtop(fd, buf-sizeof(struct pipeline_header), 
 		      buflen+sizeof(struct pipeline_header), 
 		      flags, addr, addrlen);    
+
+
     if (len  <0){
       printk("zsrmm: kernel_sendmsg returned %d\n",len);
       if (len == -EINVAL){
@@ -2220,8 +2231,16 @@ int wait_for_next_root_period(int rid, int fd, void __user *buf, size_t buflen, 
       }
     }
     
-    printk("zsrm.wait_next_root_period: returned from sys_sendto rid(%d) -- going to sleep \n",rid);
+    //printk("zsrm.wait_next_root_period: returned from sys_sendto rid(%d) -- going to sleep \n",rid);
     set_current_state(TASK_UNINTERRUPTIBLE);
+
+    //wait_event_interruptible(reserve_table[rid].arrival_waitq,
+    //		     !(reserve_table[rid].execution_status & EXEC_WAIT_NEXT_PERIOD));
+
+    // reacquire zsrm locks
+    down(&zsrmsem);
+    spin_lock_irqsave(&zsrmlock, *irqflags);
+
   }
   
   return len;
@@ -2315,16 +2334,15 @@ int start_of_job_processing(int rid, long long zero_slack_adjustment_ns){
     if (task != NULL){
       p.sched_priority = reserve_table[rid].effective_priority; 
       sched_setscheduler(task, SCHED_FIFO, &p);
-      printk("zsrmm.start of job: reserve(%s) effective priority %d\n",reserve_table[rid].params.name,reserve_table[rid].effective_priority );
+      printk("zsrmm.start of job: reserve(%d) effective priority %d\n",rid,reserve_table[rid].effective_priority );
       //set_tsk_need_resched(task);
     } else {
       printk("zsrmm.start_of_job_processing: task == NULL");
     }
     // pipeline : kernel-dist DIFF -- end of commented section
   } else {
-    printk("start of job processing rid(%d) name(%s): NOT SETTING PRIORITY mode enforced(%d), exec_status(0x%x)\n",
+    printk("start of job processing rid(%d): NOT SETTING PRIORITY mode enforced(%d), exec_status(0x%x)\n",
 	   rid,
-	   reserve_table[rid].params.name,
 	   reserve_table[rid].critical_utility_mode_enforced,
 	   reserve_table[rid].execution_status);
   }
@@ -2338,6 +2356,9 @@ int wait_for_next_period(int rid){
   // by a signal that was sent to it and if so go back
   // to sleep.
   set_current_state(TASK_UNINTERRUPTIBLE);
+
+  //wait_event_interruptible(reserve_table[rid].arrival_waitq, 
+  //		   !(reserve_table[rid].execution_status & EXEC_WAIT_NEXT_PERIOD));
   return 0;
 }
 
@@ -2615,6 +2636,7 @@ void init(void){
     reserve_table[i].next_paused_lower_criticality = NULL;
     reserve_table[i].e2e_job_executing_nanos=0L;
     reserve_table[i].local_e2e_start_of_period_nanos=0L;
+    init_waitqueue_head(&(reserve_table[i].arrival_waitq));
   }
   
   for (i=0;i<MAX_MODAL_RESERVES;i++){
@@ -2936,6 +2958,7 @@ static ssize_t zsrm_write
 	res = -1;
       } else {
 	res = wait_for_next_root_period(call.args.wait_next_root_stage_period_params.reserveid, 
+					&flags,
 					call.args.wait_next_root_stage_period_params.fd,
 					call.args.wait_next_root_stage_period_params.usroutdata,
 					call.args.wait_next_root_stage_period_params.usroutdatalen,

@@ -53,10 +53,10 @@ void *airspeed_task(void *argp){
   cpuattr.period.tv_sec = 14;
   cpuattr.period.tv_nsec= 534000000;
   cpuattr.priority = 1;
-  cpuattr.execution_time.tv_sec = 0;
-  cpuattr.execution_time.tv_nsec = 100000000;
-  cpuattr.overload_execution_time.tv_sec = 0;
-  cpuattr.overload_execution_time.tv_nsec = 100000000;
+  /* cpuattr.execution_time.tv_sec = 0; */
+  /* cpuattr.execution_time.tv_nsec = 100000000; */
+  /* cpuattr.overload_execution_time.tv_sec = 0; */
+  /* cpuattr.overload_execution_time.tv_nsec = 100000000; */
   cpuattr.zs_instant.tv_sec=8;//11 ;
   cpuattr.zs_instant.tv_nsec=0;//278000000; 
   cpuattr.response_time_instant.tv_sec = 10;
@@ -121,9 +121,9 @@ void *airspeed_task(void *argp){
     printf("airspeed: before busy period\n");
     if (firsttime){
       firsttime=0;
-      busy_timestamped(1362,timestamps_ns1, MAX_TIMESTAMPS,&bufidx1);
+      //busy_timestamped(1362,timestamps_ns1, MAX_TIMESTAMPS,&bufidx1);
     } else {
-      busy_timestamped(1362,timestamps_ns1, MAX_TIMESTAMPS,&bufidx1);
+      //busy_timestamped(1362,timestamps_ns1, MAX_TIMESTAMPS,&bufidx1);
     }
     sprintf(buf,"msg[%d]",i);
     printf("airspeed: before wait_next_root_period\n");
@@ -213,10 +213,10 @@ void *lift_task(void *argp){
   cpuattr.period.tv_sec = 14;
   cpuattr.period.tv_nsec= 534000000;
   cpuattr.priority = 1;
-  cpuattr.execution_time.tv_sec = 0;
-  cpuattr.execution_time.tv_nsec = 100000000;
-  cpuattr.overload_execution_time.tv_sec = 0;
-  cpuattr.overload_execution_time.tv_nsec = 100000000;
+  /* cpuattr.execution_time.tv_sec = 0; */
+  /* cpuattr.execution_time.tv_nsec = 100000000; */
+  /* cpuattr.overload_execution_time.tv_sec = 0; */
+  /* cpuattr.overload_execution_time.tv_nsec = 100000000; */
   cpuattr.zs_instant.tv_sec=8;//11; 
   cpuattr.zs_instant.tv_nsec=0; //278000000; 
   cpuattr.response_time_instant.tv_sec = 10;
@@ -294,7 +294,7 @@ void *lift_task(void *argp){
       sprintf(buf,"msg[%d]",i++);
     }
     io_flag = 0;
-    busy_timestamped(1362,timestamps_ns2, MAX_TIMESTAMPS,&bufidx2);
+    //busy_timestamped(1362,timestamps_ns2, MAX_TIMESTAMPS,&bufidx2);
   }
 
   sprintf(buf,"bye");
@@ -380,10 +380,10 @@ void *stall_task(void *argp){
   cpuattr.period.tv_sec = 14;
   cpuattr.period.tv_nsec= 534000000;
   cpuattr.priority = 1;
-  cpuattr.execution_time.tv_sec = 0;
-  cpuattr.execution_time.tv_nsec = 100000000;
-  cpuattr.overload_execution_time.tv_sec = 0;
-  cpuattr.overload_execution_time.tv_nsec = 100000000;
+  /* cpuattr.execution_time.tv_sec = 0; */
+  /* cpuattr.execution_time.tv_nsec = 100000000; */
+  /* cpuattr.overload_execution_time.tv_sec = 0; */
+  /* cpuattr.overload_execution_time.tv_nsec = 100000000; */
   cpuattr.zs_instant.tv_sec=8;//11; 
   cpuattr.zs_instant.tv_nsec=0; //278000000;
   cpuattr.response_time_instant.tv_sec = 10;
@@ -463,9 +463,9 @@ void *stall_task(void *argp){
     io_flag = 0;
     if (firsttime){
       firsttime=0;
-      busy_timestamped(1362,timestamps_ns3, MAX_TIMESTAMPS,&bufidx3);
+      //busy_timestamped(1362,timestamps_ns3, MAX_TIMESTAMPS,&bufidx3);
     } else {
-      busy_timestamped(1362,timestamps_ns3, MAX_TIMESTAMPS,&bufidx3);
+      //busy_timestamped(1362,timestamps_ns3, MAX_TIMESTAMPS,&bufidx3);
     }
   }
 
@@ -554,10 +554,10 @@ void *angle_task(void *argp){
   cpuattr.period.tv_sec =  14;
   cpuattr.period.tv_nsec= 534000000;
   cpuattr.priority = 1;
-  cpuattr.execution_time.tv_sec = 0;
-  cpuattr.execution_time.tv_nsec = 100000000;
-  cpuattr.overload_execution_time.tv_sec = 0;
-  cpuattr.overload_execution_time.tv_nsec = 500000000;
+  /* cpuattr.execution_time.tv_sec = 0; */
+  /* cpuattr.execution_time.tv_nsec = 100000000; */
+  /* cpuattr.overload_execution_time.tv_sec = 0; */
+  /* cpuattr.overload_execution_time.tv_nsec = 500000000; */
   cpuattr.zs_instant.tv_sec=8;//11; 
   cpuattr.zs_instant.tv_nsec=0; //278000000; 
   cpuattr.response_time_instant.tv_sec = 10;
@@ -627,9 +627,9 @@ void *angle_task(void *argp){
     printf("angle received[%s] from addr(%s)\n",buf,inet_ntoa(remaddr.sin_addr));
     if (firsttime){
       firsttime=0;
-      busy_timestamped(1362,timestamps_ns4, MAX_TIMESTAMPS,&bufidx4);
+      //busy_timestamped(1362,timestamps_ns4, MAX_TIMESTAMPS,&bufidx4);
     } else {
-      busy_timestamped(1362,timestamps_ns4, MAX_TIMESTAMPS,&bufidx4);
+      //busy_timestamped(1362,timestamps_ns4, MAX_TIMESTAMPS,&bufidx4);
     }
   }
 

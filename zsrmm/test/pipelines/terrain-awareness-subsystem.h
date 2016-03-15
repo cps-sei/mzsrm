@@ -52,10 +52,10 @@ void *ground_radar_task(void *argp){
   cpuattr.period.tv_sec = 5;
   cpuattr.period.tv_nsec= 164000000;
   cpuattr.priority = 2;
-  cpuattr.execution_time.tv_sec = 0;
-  cpuattr.execution_time.tv_nsec = 100000000;
-  cpuattr.overload_execution_time.tv_sec = 0;
-  cpuattr.overload_execution_time.tv_nsec = 100000000;
+  /* cpuattr.execution_time.tv_sec = 0; */
+  /* cpuattr.execution_time.tv_nsec = 100000000; */
+  /* cpuattr.overload_execution_time.tv_sec = 0; */
+  /* cpuattr.overload_execution_time.tv_nsec = 100000000; */
   cpuattr.zs_instant.tv_sec=5;
   cpuattr.zs_instant.tv_nsec=164000000;
   cpuattr.response_time_instant.tv_sec = 10;
@@ -112,7 +112,7 @@ void *ground_radar_task(void *argp){
 
 
   for (i=0;i<ITERATIONS;i++){
-    busy_timestamped(484,timestamps_nsd, MAX_TIMESTAMPS,&bufidxd);
+    //busy_timestamped(484,timestamps_nsd, MAX_TIMESTAMPS,&bufidxd);
     sprintf(buf,"msg[%d]",i);
     if ((err = zs_wait_next_root_period(sched,rid,fd, 
 					buf ,strlen(buf)+1, 
@@ -200,10 +200,10 @@ void *terrain_distance_task(void *argp){
   cpuattr.period.tv_sec = 5;
   cpuattr.period.tv_nsec= 164000000;
   cpuattr.priority = 2;
-  cpuattr.execution_time.tv_sec = 0;
-  cpuattr.execution_time.tv_nsec = 100000000;
-  cpuattr.overload_execution_time.tv_sec = 0;
-  cpuattr.overload_execution_time.tv_nsec = 100000000;
+  /* cpuattr.execution_time.tv_sec = 0; */
+  /* cpuattr.execution_time.tv_nsec = 100000000; */
+  /* cpuattr.overload_execution_time.tv_sec = 0; */
+  /* cpuattr.overload_execution_time.tv_nsec = 100000000; */
   cpuattr.zs_instant.tv_sec=5;
   cpuattr.zs_instant.tv_nsec=164000000;
   cpuattr.response_time_instant.tv_sec = 10;
@@ -277,7 +277,7 @@ void *terrain_distance_task(void *argp){
       sprintf(buf,"msg[%d]",i++);
     }
     io_flag = 0;
-    busy_timestamped(484,timestamps_nse, MAX_TIMESTAMPS,&bufidxe);
+    //busy_timestamped(484,timestamps_nse, MAX_TIMESTAMPS,&bufidxe);
   }
 
   sprintf(buf,"bye");
@@ -363,10 +363,10 @@ void *time_to_terrain_task(void *argp){
   cpuattr.period.tv_sec = 5;
   cpuattr.period.tv_nsec= 164000000;
   cpuattr.priority = 2;
-  cpuattr.execution_time.tv_sec = 0;
-  cpuattr.execution_time.tv_nsec = 200000000;
-  cpuattr.overload_execution_time.tv_sec = 0;
-  cpuattr.overload_execution_time.tv_nsec = 300000000;
+  /* cpuattr.execution_time.tv_sec = 0; */
+  /* cpuattr.execution_time.tv_nsec = 200000000; */
+  /* cpuattr.overload_execution_time.tv_sec = 0; */
+  /* cpuattr.overload_execution_time.tv_nsec = 300000000; */
   cpuattr.zs_instant.tv_sec=5;
   cpuattr.zs_instant.tv_nsec=164000000;
   cpuattr.response_time_instant.tv_sec = 10;
@@ -441,10 +441,10 @@ void *time_to_terrain_task(void *argp){
     }
     io_flag = 0;
     if (firsttime){
-      busy_timestamped(484,timestamps_nsf, MAX_TIMESTAMPS,&bufidxf);
+      //busy_timestamped(484,timestamps_nsf, MAX_TIMESTAMPS,&bufidxf);
       firsttime=0;
     } else {
-      busy_timestamped(484,timestamps_nsf, MAX_TIMESTAMPS,&bufidxf);
+      //busy_timestamped(484,timestamps_nsf, MAX_TIMESTAMPS,&bufidxf);
     }    
   }
 
@@ -534,10 +534,10 @@ void *terrain_warning_task(void *argp){
   cpuattr.period.tv_sec = 5;
   cpuattr.period.tv_nsec= 164000000;
   cpuattr.priority = 2;
-  cpuattr.execution_time.tv_sec = 0;
-  cpuattr.execution_time.tv_nsec = 100000000;
-  cpuattr.overload_execution_time.tv_sec = 0;
-  cpuattr.overload_execution_time.tv_nsec = 100000000;
+  /* cpuattr.execution_time.tv_sec = 0; */
+  /* cpuattr.execution_time.tv_nsec = 100000000; */
+  /* cpuattr.overload_execution_time.tv_sec = 0; */
+  /* cpuattr.overload_execution_time.tv_nsec = 100000000; */
   cpuattr.zs_instant.tv_sec=5;
   cpuattr.zs_instant.tv_nsec=164000000;
   cpuattr.response_time_instant.tv_sec = 10;
@@ -600,7 +600,7 @@ void *terrain_warning_task(void *argp){
       break;
     }
     printf("virtual-runway received[%s] from addr(%s)\n",buf,inet_ntoa(remaddr.sin_addr));
-    busy_timestamped(484,timestamps_nsg, MAX_TIMESTAMPS,&bufidxg);
+    //busy_timestamped(484,timestamps_nsg, MAX_TIMESTAMPS,&bufidxg);
   }
 
   zs_free_msg_packet(sched, buf);

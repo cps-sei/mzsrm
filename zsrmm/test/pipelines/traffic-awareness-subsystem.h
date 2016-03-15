@@ -52,10 +52,10 @@ void *air_radar_task(void *argp){
   cpuattr.period.tv_sec = 7;
   cpuattr.period.tv_nsec= 002000000;
   cpuattr.priority = 4;
-  cpuattr.execution_time.tv_sec = 0;
-  cpuattr.execution_time.tv_nsec = 100000000;
-  cpuattr.overload_execution_time.tv_sec = 0;
-  cpuattr.overload_execution_time.tv_nsec = 100000000;
+  /* cpuattr.execution_time.tv_sec = 0; */
+  /* cpuattr.execution_time.tv_nsec = 100000000; */
+  /* cpuattr.overload_execution_time.tv_sec = 0; */
+  /* cpuattr.overload_execution_time.tv_nsec = 100000000; */
   cpuattr.zs_instant.tv_sec=7;
   cpuattr.zs_instant.tv_nsec=002000000;
   cpuattr.response_time_instant.tv_sec = 10;
@@ -113,7 +113,7 @@ void *air_radar_task(void *argp){
 
 
   for (i=0;i<ITERATIONS;i++){
-    busy_timestamped(656,timestamps_ns9, MAX_TIMESTAMPS,&bufidx9);
+    //busy_timestamped(656,timestamps_ns9, MAX_TIMESTAMPS,&bufidx9);
     sprintf(buf,"msg[%d]",i);
     if ((err = zs_wait_next_root_period(sched,rid,fd, 
 					buf ,strlen(buf)+1, 
@@ -201,10 +201,10 @@ void *object_identification_task(void *argp){
   cpuattr.period.tv_sec =7;
   cpuattr.period.tv_nsec= 002000000;
   cpuattr.priority = 4;
-  cpuattr.execution_time.tv_sec = 0;
-  cpuattr.execution_time.tv_nsec = 100000000;
-  cpuattr.overload_execution_time.tv_sec = 0;
-  cpuattr.overload_execution_time.tv_nsec = 100000000;
+  /* cpuattr.execution_time.tv_sec = 0; */
+  /* cpuattr.execution_time.tv_nsec = 100000000; */
+  /* cpuattr.overload_execution_time.tv_sec = 0; */
+  /* cpuattr.overload_execution_time.tv_nsec = 100000000; */
   cpuattr.zs_instant.tv_sec=7;
   cpuattr.zs_instant.tv_nsec=002000000;
   cpuattr.response_time_instant.tv_sec = 10;
@@ -278,7 +278,7 @@ void *object_identification_task(void *argp){
       sprintf(buf,"msg[%d]",i++);
     }
     io_flag = 0;
-    busy_timestamped(656,timestamps_nsa, MAX_TIMESTAMPS,&bufidxa);
+    //busy_timestamped(656,timestamps_nsa, MAX_TIMESTAMPS,&bufidxa);
   }
 
   sprintf(buf,"bye");
@@ -364,10 +364,10 @@ void *track_building_task(void *argp){
   cpuattr.period.tv_sec = 7;
   cpuattr.period.tv_nsec= 002000000;
   cpuattr.priority = 4;
-  cpuattr.execution_time.tv_sec = 0;
-  cpuattr.execution_time.tv_nsec = 100000000;
-  cpuattr.overload_execution_time.tv_sec = 0;
-  cpuattr.overload_execution_time.tv_nsec = 100000000;
+  /* cpuattr.execution_time.tv_sec = 0; */
+  /* cpuattr.execution_time.tv_nsec = 100000000; */
+  /* cpuattr.overload_execution_time.tv_sec = 0; */
+  /* cpuattr.overload_execution_time.tv_nsec = 100000000; */
   cpuattr.zs_instant.tv_sec=7;
   cpuattr.zs_instant.tv_nsec=002000000;
   cpuattr.response_time_instant.tv_sec = 10;
@@ -440,7 +440,7 @@ void *track_building_task(void *argp){
       sprintf(buf,"msg[%d]",i++);
     }
     io_flag = 0;
-    busy_timestamped(656,timestamps_nsb, MAX_TIMESTAMPS,&bufidxb);
+    //busy_timestamped(656,timestamps_nsb, MAX_TIMESTAMPS,&bufidxb);
   }
 
   sprintf(buf,"bye");
@@ -529,10 +529,10 @@ void *traffic_warning_task(void *argp){
   cpuattr.period.tv_sec = 7;
   cpuattr.period.tv_nsec=002000000 ;
   cpuattr.priority = 4;
-  cpuattr.execution_time.tv_sec = 0;
-  cpuattr.execution_time.tv_nsec = 100000000;
-  cpuattr.overload_execution_time.tv_sec = 0;
-  cpuattr.overload_execution_time.tv_nsec = 100000000;
+  /* cpuattr.execution_time.tv_sec = 0; */
+  /* cpuattr.execution_time.tv_nsec = 100000000; */
+  /* cpuattr.overload_execution_time.tv_sec = 0; */
+  /* cpuattr.overload_execution_time.tv_nsec = 100000000; */
   cpuattr.zs_instant.tv_sec=7;
   cpuattr.zs_instant.tv_nsec=002000000;
   cpuattr.response_time_instant.tv_sec = 10;
@@ -595,7 +595,7 @@ void *traffic_warning_task(void *argp){
       break;
     }
     printf("virtual-runway received[%s] from addr(%s)\n",buf,inet_ntoa(remaddr.sin_addr));
-    busy_timestamped(656,timestamps_nsc, MAX_TIMESTAMPS,&bufidxc);
+    //busy_timestamped(656,timestamps_nsc, MAX_TIMESTAMPS,&bufidxc);
   }
 
   zs_free_msg_packet(sched, buf);

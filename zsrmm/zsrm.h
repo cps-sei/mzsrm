@@ -325,6 +325,7 @@ struct zs_reserve {
   int outdatalen;
   struct socket *outsock;
   struct socket *insock;
+  wait_queue_head_t arrival_waitq;
 };
 
 struct zs_modal_reserve{
@@ -392,7 +393,7 @@ void resume_reserve(struct zs_reserve *rsv);
 int push_to_reschedule(int i);
 int pop_to_reschedule(void);
 
-int wait_for_next_root_period(int rid, int fd, void __user *buf, size_t buflen, unsigned int flags, struct sockaddr __user *addr, int addr_len);
+int wait_for_next_root_period(int rid, unsigned long *irqflags, int fd, void __user *buf, size_t buflen, unsigned int flags, struct sockaddr __user *addr, int addr_len);
 int wait_for_next_stage_arrival(int rid, unsigned long *flags,
 				int fd, void __user *buf, size_t size, 
 				unsigned int sockflags, 

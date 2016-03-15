@@ -145,7 +145,7 @@ int main(int argc, char * argv[]){
       printf("Error(%d) in wait_next_arrival\n",err);
       break;
     }
-    printf("last: received[%s] from addr(%s)\n",buf,inet_ntoa(remaddr.sin_addr));
+    printf("last1: received[%s] from addr(%s)\n",buf,inet_ntoa(remaddr.sin_addr));
   }
 
   zs_free_msg_packet(sched, buf);  

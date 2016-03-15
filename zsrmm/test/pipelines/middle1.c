@@ -171,7 +171,7 @@ int main(int argc, char * argv[]){
       break;
     } else {
       io_flag = 0;
-      printf("middle: received[%s] from addr(%s)\n",buf,inet_ntoa(prevaddr.sin_addr));
+      printf("middle1: received[%s] from addr(%s)\n",buf,inet_ntoa(prevaddr.sin_addr));
     }
   }
 
@@ -197,6 +197,6 @@ int main(int argc, char * argv[]){
   zs_delete_reserve(sched,rid);
   zs_close_sched(sched);
 
-  printf("middle done\n");
+  printf("middle1 done\n");
   close(fd);
 }

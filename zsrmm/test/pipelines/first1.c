@@ -134,7 +134,7 @@ int main(int argc, char * argv[]){
 
   for (i=0;i<5;i++){
     sprintf(buf,"msg[%d]",i);
-    printf("root sending msg[%s]\n",buf);
+    printf("first1 sending msg[%s]\n",buf);
     if ((err = zs_wait_next_root_period(sched,rid,fd, 
 					buf ,strlen(buf)+1, 
 					0, (struct sockaddr *)&cpuattr.outaddr, 
@@ -156,6 +156,6 @@ int main(int argc, char * argv[]){
   zs_delete_reserve(sched,rid);
   zs_close_sched(sched);
 
-  printf("first done\n");
+  printf("first1 done\n");
   close(fd);
 }

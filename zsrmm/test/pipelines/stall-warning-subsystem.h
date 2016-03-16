@@ -62,7 +62,7 @@ void *airspeed_task(void *argp){
   cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
   cpuattr.reserve_type = CRITICALITY_RESERVE | PIPELINE_STAGE_ROOT;
-  cpuattr.enforcement_mask = DONT_ENFORCE_ZERO_SLACK_MASK; //0;//ZS_ENFORCEMENT_HARD_MASK;//DONT_ENFORCE_ZERO_SLACK;
+  cpuattr.enforcement_mask = 0;//ZS_ENFORCEMENT_HARD_MASK;//DONT_ENFORCE_ZERO_SLACK;
   cpuattr.e2e_execution_time.tv_sec = 4;
   cpuattr.e2e_execution_time.tv_nsec = 360000000;
   cpuattr.e2e_overload_execution_time.tv_sec = 5;
@@ -121,9 +121,9 @@ void *airspeed_task(void *argp){
     printf("airspeed: before busy period\n");
     if (firsttime){
       firsttime=0;
-      //busy_timestamped(1362,timestamps_ns1, MAX_TIMESTAMPS,&bufidx1);
+      busy_timestamped(1362,timestamps_ns1, MAX_TIMESTAMPS,&bufidx1);
     } else {
-      //busy_timestamped(1362,timestamps_ns1, MAX_TIMESTAMPS,&bufidx1);
+      busy_timestamped(1362,timestamps_ns1, MAX_TIMESTAMPS,&bufidx1);
     }
     sprintf(buf,"msg[%d]",i);
     printf("airspeed: before wait_next_root_period\n");
@@ -222,7 +222,7 @@ void *lift_task(void *argp){
   cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
   cpuattr.reserve_type = CRITICALITY_RESERVE | PIPELINE_STAGE_MIDDLE | APERIODIC_ARRIVAL;
-  cpuattr.enforcement_mask = DONT_ENFORCE_ZERO_SLACK_MASK; //ZS_ENFORCEMENT_HARD_MASK;//DONT_ENFORCE_ZERO_SLACK;
+  cpuattr.enforcement_mask = 0;//ZS_ENFORCEMENT_HARD_MASK;//DONT_ENFORCE_ZERO_SLACK;
   cpuattr.e2e_execution_time.tv_sec = 4;
   cpuattr.e2e_execution_time.tv_nsec = 360000000;
   cpuattr.e2e_overload_execution_time.tv_sec = 5;
@@ -294,7 +294,7 @@ void *lift_task(void *argp){
       sprintf(buf,"msg[%d]",i++);
     }
     io_flag = 0;
-    //busy_timestamped(1362,timestamps_ns2, MAX_TIMESTAMPS,&bufidx2);
+    busy_timestamped(1362,timestamps_ns2, MAX_TIMESTAMPS,&bufidx2);
   }
 
   sprintf(buf,"bye");
@@ -389,7 +389,7 @@ void *stall_task(void *argp){
   cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
   cpuattr.reserve_type = CRITICALITY_RESERVE | PIPELINE_STAGE_MIDDLE | APERIODIC_ARRIVAL;
-  cpuattr.enforcement_mask = DONT_ENFORCE_ZERO_SLACK_MASK;//ZS_ENFORCEMENT_HARD_MASK;//DONT_ENFORCE_ZERO_SLACK;
+  cpuattr.enforcement_mask = 0;//ZS_ENFORCEMENT_HARD_MASK;//DONT_ENFORCE_ZERO_SLACK;
   cpuattr.e2e_execution_time.tv_sec = 4;
   cpuattr.e2e_execution_time.tv_nsec = 360000000;
   cpuattr.e2e_overload_execution_time.tv_sec = 5;
@@ -463,9 +463,9 @@ void *stall_task(void *argp){
     io_flag = 0;
     if (firsttime){
       firsttime=0;
-      //busy_timestamped(1362,timestamps_ns3, MAX_TIMESTAMPS,&bufidx3);
+      busy_timestamped(1362,timestamps_ns3, MAX_TIMESTAMPS,&bufidx3);
     } else {
-      //busy_timestamped(1362,timestamps_ns3, MAX_TIMESTAMPS,&bufidx3);
+      busy_timestamped(1362,timestamps_ns3, MAX_TIMESTAMPS,&bufidx3);
     }
   }
 
@@ -563,7 +563,7 @@ void *angle_task(void *argp){
   cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
   cpuattr.reserve_type = CRITICALITY_RESERVE | PIPELINE_STAGE_LEAF | APERIODIC_ARRIVAL;
-  cpuattr.enforcement_mask = DONT_ENFORCE_ZERO_SLACK_MASK;//ZS_ENFORCEMENT_HARD_MASK;//DONTENFORCE_ZERO_SLACK;
+  cpuattr.enforcement_mask = 0;//ZS_ENFORCEMENT_HARD_MASK;//DONTENFORCE_ZERO_SLACK;
   cpuattr.e2e_execution_time.tv_sec = 4;
   cpuattr.e2e_execution_time.tv_nsec = 360000000;
   cpuattr.e2e_overload_execution_time.tv_sec = 5;
@@ -627,9 +627,9 @@ void *angle_task(void *argp){
     printf("angle received[%s] from addr(%s)\n",buf,inet_ntoa(remaddr.sin_addr));
     if (firsttime){
       firsttime=0;
-      //busy_timestamped(1362,timestamps_ns4, MAX_TIMESTAMPS,&bufidx4);
+      busy_timestamped(1362,timestamps_ns4, MAX_TIMESTAMPS,&bufidx4);
     } else {
-      //busy_timestamped(1362,timestamps_ns4, MAX_TIMESTAMPS,&bufidx4);
+      busy_timestamped(1362,timestamps_ns4, MAX_TIMESTAMPS,&bufidx4);
     }
   }
 

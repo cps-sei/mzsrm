@@ -61,7 +61,7 @@ void *air_radar_task(void *argp){
   cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
   cpuattr.reserve_type = CRITICALITY_RESERVE | PIPELINE_STAGE_ROOT;
-  cpuattr.enforcement_mask = DONT_ENFORCE_ZERO_SLACK_MASK;//0;//DONT_ENFORCE_ZERO_SLACK;
+  cpuattr.enforcement_mask = 0;//DONT_ENFORCE_ZERO_SLACK;
   cpuattr.e2e_execution_time.tv_sec = 2;
   cpuattr.e2e_execution_time.tv_nsec = 100000000;
   cpuattr.e2e_overload_execution_time.tv_sec = 2;
@@ -113,7 +113,7 @@ void *air_radar_task(void *argp){
 
 
   for (i=0;i<ITERATIONS;i++){
-    //busy_timestamped(656,timestamps_ns9, MAX_TIMESTAMPS,&bufidx9);
+    busy_timestamped(656,timestamps_ns9, MAX_TIMESTAMPS,&bufidx9);
     sprintf(buf,"msg[%d]",i);
     if ((err = zs_wait_next_root_period(sched,rid,fd, 
 					buf ,strlen(buf)+1, 
@@ -210,7 +210,7 @@ void *object_identification_task(void *argp){
   cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
   cpuattr.reserve_type = CRITICALITY_RESERVE | PIPELINE_STAGE_MIDDLE | APERIODIC_ARRIVAL;
-  cpuattr.enforcement_mask = DONT_ENFORCE_ZERO_SLACK_MASK;//0;//DONT_ENFORCE_ZERO_SLACK;
+  cpuattr.enforcement_mask = 0;//0;//DONT_ENFORCE_ZERO_SLACK;
   cpuattr.e2e_execution_time.tv_sec = 2;
   cpuattr.e2e_execution_time.tv_nsec =  100000000;
   cpuattr.e2e_overload_execution_time.tv_sec = 2;
@@ -278,7 +278,7 @@ void *object_identification_task(void *argp){
       sprintf(buf,"msg[%d]",i++);
     }
     io_flag = 0;
-    //busy_timestamped(656,timestamps_nsa, MAX_TIMESTAMPS,&bufidxa);
+    busy_timestamped(656,timestamps_nsa, MAX_TIMESTAMPS,&bufidxa);
   }
 
   sprintf(buf,"bye");
@@ -373,7 +373,7 @@ void *track_building_task(void *argp){
   cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
   cpuattr.reserve_type = CRITICALITY_RESERVE | PIPELINE_STAGE_MIDDLE | APERIODIC_ARRIVAL;
-  cpuattr.enforcement_mask = DONT_ENFORCE_ZERO_SLACK_MASK;//0;//DONT_ENFORCE_ZERO_SLACK;
+  cpuattr.enforcement_mask = 0;//0;//DONT_ENFORCE_ZERO_SLACK;
   cpuattr.e2e_execution_time.tv_sec = 2;
   cpuattr.e2e_execution_time.tv_nsec = 100000000;
   cpuattr.e2e_overload_execution_time.tv_sec = 2;
@@ -440,7 +440,7 @@ void *track_building_task(void *argp){
       sprintf(buf,"msg[%d]",i++);
     }
     io_flag = 0;
-    //busy_timestamped(656,timestamps_nsb, MAX_TIMESTAMPS,&bufidxb);
+    busy_timestamped(656,timestamps_nsb, MAX_TIMESTAMPS,&bufidxb);
   }
 
   sprintf(buf,"bye");
@@ -538,7 +538,7 @@ void *traffic_warning_task(void *argp){
   cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
   cpuattr.reserve_type = CRITICALITY_RESERVE | PIPELINE_STAGE_LEAF | APERIODIC_ARRIVAL;
-  cpuattr.enforcement_mask = DONT_ENFORCE_ZERO_SLACK_MASK;//0;//DONT_ENFORCE_ZERO_SLACK;
+  cpuattr.enforcement_mask = 0;//0;//DONT_ENFORCE_ZERO_SLACK;
   cpuattr.e2e_execution_time.tv_sec = 2;
   cpuattr.e2e_execution_time.tv_nsec = 100000000;
   cpuattr.e2e_overload_execution_time.tv_sec = 2;
@@ -595,7 +595,7 @@ void *traffic_warning_task(void *argp){
       break;
     }
     printf("virtual-runway received[%s] from addr(%s)\n",buf,inet_ntoa(remaddr.sin_addr));
-    //busy_timestamped(656,timestamps_nsc, MAX_TIMESTAMPS,&bufidxc);
+    busy_timestamped(656,timestamps_nsc, MAX_TIMESTAMPS,&bufidxc);
   }
 
   zs_free_msg_packet(sched, buf);

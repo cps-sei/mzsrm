@@ -61,7 +61,7 @@ void *ground_radar_task(void *argp){
   cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
   cpuattr.reserve_type = CRITICALITY_RESERVE | PIPELINE_STAGE_ROOT;
-  cpuattr.enforcement_mask = DONT_ENFORCE_ZERO_SLACK_MASK;;//0;//ZS_ENFORCEMENT_HARD_MASK;//DONT_ENFORCE_ZERO_SLACK;
+  cpuattr.enforcement_mask = 0;//ZS_ENFORCEMENT_HARD_MASK;//DONT_ENFORCE_ZERO_SLACK;
   cpuattr.e2e_execution_time.tv_sec = 1;
   cpuattr.e2e_execution_time.tv_nsec = 548000000;
   cpuattr.e2e_overload_execution_time.tv_sec = 1;
@@ -112,7 +112,7 @@ void *ground_radar_task(void *argp){
 
 
   for (i=0;i<ITERATIONS;i++){
-    //busy_timestamped(484,timestamps_nsd, MAX_TIMESTAMPS,&bufidxd);
+    busy_timestamped(484,timestamps_nsd, MAX_TIMESTAMPS,&bufidxd);
     sprintf(buf,"msg[%d]",i);
     if ((err = zs_wait_next_root_period(sched,rid,fd, 
 					buf ,strlen(buf)+1, 
@@ -209,7 +209,7 @@ void *terrain_distance_task(void *argp){
   cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
   cpuattr.reserve_type = CRITICALITY_RESERVE | PIPELINE_STAGE_MIDDLE | APERIODIC_ARRIVAL;
-  cpuattr.enforcement_mask = DONT_ENFORCE_ZERO_SLACK_MASK;//ZS_ENFORCEMENT_HARD_MASK;//DONT_ENFORCE_ZERO_SLACK;
+  cpuattr.enforcement_mask = 0;//ZS_ENFORCEMENT_HARD_MASK;//DONT_ENFORCE_ZERO_SLACK;
   cpuattr.e2e_execution_time.tv_sec = 1;
   cpuattr.e2e_execution_time.tv_nsec = 548000000;
   cpuattr.e2e_overload_execution_time.tv_sec = 1;
@@ -277,7 +277,7 @@ void *terrain_distance_task(void *argp){
       sprintf(buf,"msg[%d]",i++);
     }
     io_flag = 0;
-    //busy_timestamped(484,timestamps_nse, MAX_TIMESTAMPS,&bufidxe);
+    busy_timestamped(484,timestamps_nse, MAX_TIMESTAMPS,&bufidxe);
   }
 
   sprintf(buf,"bye");
@@ -372,7 +372,7 @@ void *time_to_terrain_task(void *argp){
   cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
   cpuattr.reserve_type = CRITICALITY_RESERVE | PIPELINE_STAGE_MIDDLE | APERIODIC_ARRIVAL;
-  cpuattr.enforcement_mask = DONT_ENFORCE_ZERO_SLACK_MASK;//ZS_ENFORCEMENT_HARD_MASK;//DONT_ENFORCE_ZERO_SLACK;
+  cpuattr.enforcement_mask = 0;//ZS_ENFORCEMENT_HARD_MASK;//DONT_ENFORCE_ZERO_SLACK;
   cpuattr.e2e_execution_time.tv_sec = 1;
   cpuattr.e2e_execution_time.tv_nsec = 548000000;
   cpuattr.e2e_overload_execution_time.tv_sec = 1;
@@ -441,10 +441,10 @@ void *time_to_terrain_task(void *argp){
     }
     io_flag = 0;
     if (firsttime){
-      //busy_timestamped(484,timestamps_nsf, MAX_TIMESTAMPS,&bufidxf);
+      busy_timestamped(484,timestamps_nsf, MAX_TIMESTAMPS,&bufidxf);
       firsttime=0;
     } else {
-      //busy_timestamped(484,timestamps_nsf, MAX_TIMESTAMPS,&bufidxf);
+      busy_timestamped(484,timestamps_nsf, MAX_TIMESTAMPS,&bufidxf);
     }    
   }
 
@@ -543,7 +543,7 @@ void *terrain_warning_task(void *argp){
   cpuattr.response_time_instant.tv_sec = 10;
   cpuattr.response_time_instant.tv_nsec =0;
   cpuattr.reserve_type = CRITICALITY_RESERVE | PIPELINE_STAGE_LEAF | APERIODIC_ARRIVAL;
-  cpuattr.enforcement_mask = DONT_ENFORCE_ZERO_SLACK_MASK;//ZS_ENFORCEMENT_HARD_MASK;//DONT_ENFORCE_ZERO_SLACK;
+  cpuattr.enforcement_mask = 0;//ZS_ENFORCEMENT_HARD_MASK;//DONT_ENFORCE_ZERO_SLACK;
   cpuattr.e2e_execution_time.tv_sec = 1;
   cpuattr.e2e_execution_time.tv_nsec = 548000000;
   cpuattr.e2e_overload_execution_time.tv_sec = 1;
@@ -600,7 +600,7 @@ void *terrain_warning_task(void *argp){
       break;
     }
     printf("virtual-runway received[%s] from addr(%s)\n",buf,inet_ntoa(remaddr.sin_addr));
-    //busy_timestamped(484,timestamps_nsg, MAX_TIMESTAMPS,&bufidxg);
+    busy_timestamped(484,timestamps_nsg, MAX_TIMESTAMPS,&bufidxg);
   }
 
   zs_free_msg_packet(sched, buf);

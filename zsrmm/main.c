@@ -450,6 +450,7 @@ void kill_reserve(struct zs_reserve *rsv, int in_interrupt_context){
     if (!in_interrupt_context){
       if (rsv->params.enforcement_mask & ZS_ENFORCEMENT_HARD_MASK){
 	//printk("zsrmm.kill_reserve: setting rid(%d) TASK_INTERRUPTIBLE\n",rsv->rid);
+	rsv->effective_priority = 0;
 	p.sched_priority = rsv->effective_priority;
 	sched_setscheduler(task, SCHED_FIFO, &p);    
 	// set task state not reliable -- HARD enforcement broken for now
@@ -673,8 +674,9 @@ void stop_accounting(struct zs_reserve *rsv, int update_active_highest_priority,
       struct zs_reserve *tmp = active_reserve_ptr[rsv->params.bound_to_cpu];
       printk("zsrm.stop_acct: active_rsv(%d) != rsv(%d) @cpu(%d) not top priority\n",active_reserve_ptr[rsv->params.bound_to_cpu]->rid,rsv->rid,rsv->params.bound_to_cpu);
       // just remove it from queue
-      while(tmp->next_lower_priority != NULL && tmp->next_lower_priority != rsv)
-	;
+      while(tmp->next_lower_priority != NULL && tmp->next_lower_priority != rsv){
+	tmp = tmp->next_lower_priority;
+      }
       if (tmp->next_lower_priority == rsv){
 	tmp->next_lower_priority = rsv->next_lower_priority;
 	rsv->next_lower_priority = NULL;
@@ -914,7 +916,10 @@ static void scheduler_task(void *a){
 	  // setting task state is unreliable
 	  //set_task_state(task, TASK_INTERRUPTIBLE);
 	  //push_to_stop(rid);
-	  swap_task=0;
+	  //swap_task=0;
+	  p.sched_priority = 0;
+	  sched_setscheduler(task, SCHED_NORMAL, &p);
+	  swap_task =1;
 	  zsrm_add_debug_event(timestamp_ns(),
 			       ZSRM_DEBUG_EVENT_JOB_INDIRECT_HARD_STOP,
 			       rid);
